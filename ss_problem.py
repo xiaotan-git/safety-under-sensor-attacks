@@ -5,7 +5,7 @@ from scipy import linalg
 import control as ct
 
 # sampling rate
-TS = 0.04
+TS = 0.4
 
 def nchoosek(v: List[int], k: int) -> List[List[int]]:
     """
@@ -23,10 +23,10 @@ def nchoosek(v: List[int], k: int) -> List[List[int]]:
 def right_shift_row_array(a, shift_amount):
     '''
     shift a row array (1,d) rightwards by shift_amount
-    a = np.array([a1, a2, a3]) or a = np.array([[a1, a2, a3]]) or a = np.array([[a1], [a2], [a3]])git
+    a = np.array([a1, a2, a3]) or a = np.array([[a1, a2, a3]]) or a = np.array([[a1], [a2], [a3]])
     a = right_shift_row_array(a,2) 
     # result 
-    a = np.array([[a3,a2,a1]])
+    a = np.array([[a2,a3,a1]])
     '''
     a.reshape(1,-1)
     to_shift = a[0,-shift_amount:]
@@ -36,31 +36,37 @@ def right_shift_row_array(a, shift_amount):
 
 class SSProblem():
     '''
-    This class defines data, system model, etc for SSR problem
+    This class defines system model, input and measurement data, etc for SSR problem
+    
+    Conventions: 
+    A, B, C, D: state-space system matrices,  2d-array
+    n,m,p,s,tspan: integers
+    input_sequence, output_sequence: 2d-array. Each row denotes input at one time instant. 
+    input_sequence[0,:]/output_sequence[0,:] is the earliest input/output at time  t-tspan+1
+    input_sequence[-1,:]/output_sequence[-1,:] is the most recent input/output at time  t
     '''
-    def __init__(self, Ac, Bc, Cc, Dc, s=2, measurements = None, init_from_ct = True,input_exist = True) -> None:
-        if init_from_ct:
-            A,B,C,D = self.ct_to_dt(Ac, Bc, Cc, Dc, TS)
+    def __init__(self, dtsys_a, dtsys_b, dtsys_c, dtsys_d, output_sequence, 
+                 attack_sensor_count=2, input_sequence = None,measurement_noise_level= None) -> None:
 
-            self.A = A
-            self.B = B
-            self.C = C
-            self.D = D
+        self.A = dtsys_a
+        self.B = dtsys_b
+        self.C = dtsys_c
+        self.D = dtsys_d
+        self.tspan = output_sequence.shape[0]
+        self.noise_level = measurement_noise_level
+
+        self.n = np.shape(dtsys_a)[0] # dim of states
+        self.m = np.shape(dtsys_b)[1] # dim of inputs
+        self.p = np.shape(dtsys_c)[0] # no. of sensors
+        self.s = attack_sensor_count # max no. of attacked sensors
+
+        if input_sequence is not None:
+            self.u_seq = input_sequence
+            self.tilde_y_his = output_sequence
         else:
-            self.A = Ac
-            self.B = Bc
-            self.C = Cc
-            self.D = Dc
+            self.u_seq = np.zeros((self.tspan,self.m))
+            self.y_his = output_sequence   
 
-        if not input_exist and measurements is not None:
-            self.y_his = measurements
-        if input_exist and measurements is not None:
-            self.tilde_y_his = measurements
-
-        self.n = np.shape(Ac)[0] # dim of states
-        self.m = np.shape(Bc)[1] # dim of inputs
-        self.p = np.shape(Cc)[0] # no. of sensors
-        self.s = s # max no. of attacked sensors
 
         assert self.n == np.shape(self.A)[0]
         assert self.n == np.shape(self.A)[1]
@@ -69,113 +75,129 @@ class SSProblem():
         assert self.p == np.shape(self.C)[0]
         assert self.n == np.shape(self.C)[1]
 
-    def ct_to_dt(self,Ac, Bc, Cc, Dc, ts):
+        assert self.tspan == np.shape(self.u_seq)[0]
+        assert self.m == np.shape(self.u_seq)[1]
+        assert self.tspan == np.shape(output_sequence)[0]
+        assert self.p == np.shape(output_sequence)[1]
+
+    @staticmethod
+    def convert_ct_to_dt(Ac, Bc, Cc, Dc, ts):
         '''
         From continuous time system (Ac, Bc, Cc, Dc) to discrete-time system (A,B,C,D) with ZOH discretization scheme 
         '''
         sys = ct.ss(Ac, Bc, Cc, Dc)
-        dtsys = sys.sample(ts,method = 'zoh')
-        return dtsys.A, dtsys.B, dtsys.C, dtsys.D, 
+        discrete_sys = sys.sample(ts,method = 'zoh')
+        return discrete_sys.A, discrete_sys.B, discrete_sys.C, discrete_sys.D, 
 
-
-    def update_state_one_step(self,xt,ut):
+    @staticmethod
+    def update_state_one_step(dtsys_a, dtsys_b, state_array,ut):
         '''
-        This method updates an array of system states xt given an input ut
+        This method propagates an array of system states xt forward in time given an input ut
 
         '''
         # xt is of dimension n \times no. of possible states
-        xt.reshape(self.n,-1)
-        ut.reshape(self.m,1)
-        x_new = self.A@xt + (self.B@ut).reshape(self.n,1) # broadcasting
+        n = dtsys_a.shape[0]
+        m = dtsys_b.shape[1]
+        if state_array.shape[0] != n:
+            state_array = state_array.transpose()
+        ut.reshape(m,1)
+        x_new = dtsys_a@state_array + (dtsys_b@ut).reshape(n,1) #  ().reshape(n,1) for broadcasting
         return x_new
     
-    def update_state(self,xt,u_seq):
+    @classmethod    
+    def update_state(cls,dtsys_a,dtsys_b,state_array,u_seq):
         '''
         This method updates an array of system states xt given an input sequence u_seq. 
         x: (n,), (n,1), (1,n) array
         u_seq: (t,m) array for multiple steps, (m,), (m,1), (1,m) array for one step update
         '''
-        if u_seq.size == self.m:
-            x_new = self.update_state_one_step(xt,u_seq)
+        m = dtsys_b.shape[1]
+        tspan, remainder = divmod(u_seq.size, m)
+        if remainder != 0:
+            raise ValueError("Number of inputs divided by input size must be an integer")
         else:
-            x_old = xt
-            for t in range(u_seq.shape[0]):
-                x_new = self.update_state_one_step(x_old,u_seq[t,:])
-                x_old = x_new
+            x_old = state_array
+            if tspan ==1:
+                x_new = cls.update_state_one_step(dtsys_a, dtsys_b,x_old,u_seq)
+            else:
+                for t in range(tspan):
+                    x_new = cls.update_state_one_step(dtsys_a, dtsys_b,x_old,u_seq[t,:])
+                    x_old = x_new
         return x_new
     
-    def state_fr_sensor(self,sensor_ind,states):
-        '''
-        This method maps a sensor index to the corresp. state in an array of states acoording to att_dic
-        '''
-        att_dic = self.att_dic
-        att_lst = list(att_dic.keys())
-        corres_state_ind = [a for a in att_lst if sensor_ind in att_dic.get(a)]
-        assert len(corres_state_ind) == 1
-        corres_state_ind = corres_state_ind[0]
-        corres_state = states[:,corres_state_ind]
-        return corres_state
-        
-    def gen_attack_measurement(self,tspan = None,s = None,att_dic = None,
-                                fake_state_count = 1, init_states = None,u_seq = None,
-                                noise = False,noise_level = 0.001):
+    @classmethod         
+    def generate_attack_measurement(cls,dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_indexed_init_state_list,
+                                    s = 2, is_noisy = True, noise_level = 0.001, tspan = None,u_seq = None):
         '''
         Generate the worst-case attack by assuming that the attacker tries to confuse the system with some states. 
-        Which sensor to confuse the system with which state is given in att_dic
+        The correspondence between sensors and states is given in att_dic
+
+        example:
+        x1 = np.array([[10],[30]])
+        x2 = np.array([[20],[30]])
+        # 4 sensors
+        sensor_indexed_init_state_list= [x1, x2, x1, x2]
         '''
-        # no. of measurement steps
+        n = dtsys_a.shape[0]
+        m = dtsys_b.shape[1]
+        p = dtsys_c.shape[0]
+
+        # measurement steps
         if tspan is None:
-            tspan = self.n
-        # no. of sensors attacked
-        if s is None:
-            s = self.s
-        
-        # initial states (the first column is true, other columns are fake)
-        if init_states is None:
-            # randomize init_state
-            init_states = np.random.uniform(-5,5,(self.n, fake_state_count+1))
+            tspan = n
         # input sequence
         if u_seq is None:
         # random input_sequence, oldest input comes first, e.g., u_seq[0,:] -> u(0) 
-            u_seq = np.random.uniform(-5,5,(tspan,self.m))
+            u_seq = np.random.uniform(-5,5,(tspan,m))
             u_seq[-1,:] = 0.0
 
-        assert fake_state_count<= s
-        assert init_states.shape[1] == len(att_dic)
-
-        self.tspan = tspan
-        self.s = s
-        self.init_states = init_states
-        self.att_dic = att_dic
-        self.u_seq = u_seq
-        self.noise_level = noise_level
-
-        measurement_y = np.zeros((tspan,self.p))
+        init_states = np.hstack(sensor_indexed_init_state_list)
         xt_new = init_states
+        tilde_y_his = np.zeros((tspan,p))
         for t in range(tspan):
-            for i in range(self.p):
-                corres_state = self.state_fr_sensor(i,xt_new)
+            for i in range(p):
+                corres_state = xt_new[:,i:i+1]
                 # print(f'sensor {i}, corres. state {corres_state}')
-                Ci = self.C[i:i+1,:] # 2D array
-                Di = self.D[i:i+1,:] # 2D array
-                yi_t = Ci@corres_state + Di@(u_seq[t,:].reshape(self.m,1))
-                measurement_y[t,i] = yi_t
+                Ci = dtsys_c[i:i+1,:] # 2D array
+                Di = dtsys_d[i:i+1,:] # 2D array
+                yi_t = Ci@corres_state + Di@(u_seq[t,:].reshape(m,1))
+                tilde_y_his[t,i] = yi_t # entry-wise assignment
             # update state to next time instant
             xt_old = xt_new
-            xt_new = self.update_state(xt_old,u_seq[t,:])
+            xt_new = cls.update_state(dtsys_a,dtsys_b,xt_old,u_seq[t,:])
 
-        if noise:
-            measurement_y = measurement_y + np.random.normal(0,noise_level,(tspan,self.p))
+        if is_noisy:
+            tilde_y_his = tilde_y_his + np.random.normal(0,float(noise_level),(tspan,p))
 
-        self.tilde_y_his = measurement_y
 
-class SecureStateReconst():
+        return u_seq, tilde_y_his, noise_level
+
+class SecureStateReconstruct():
     '''
     This class implements different SSR algorithms and yields possible states and corresponding sensors
     '''
     def __init__(self, ss_problem:SSProblem,possible_comb = None) -> None:
         self.problem = ss_problem
-        obser_array = np.zeros((ss_problem.tspan,ss_problem.n,ss_problem.p))
+        # 3d narray, shape (tspan, n, p)
+        self.obser = self.construct_observability_matrices()
+
+        # possible healthy sensor combinations
+        if possible_comb is None:
+            num_healthy_sensors = ss_problem.p-ss_problem.s
+            self.possible_comb = nchoosek([i for i in range(ss_problem.p)],num_healthy_sensors)
+        else:
+            self.possible_comb = possible_comb
+
+        # check if the clean measurement exists
+        if hasattr(ss_problem,'y_his'):
+            self.y_his = ss_problem.y_his
+        else:
+            # 2d narray, shape (tspan, p)
+            self.y_his = self.construct_clean_measurement()
+
+    def construct_observability_matrices(self):
+        ss_problem = self.problem
+        obser_matrix_array = np.zeros((ss_problem.tspan,ss_problem.n,ss_problem.p))
 
         A = ss_problem.A
         for i in range(ss_problem.p):
@@ -184,14 +206,12 @@ class SecureStateReconst():
             for t in range(1,ss_problem.tspan):
                 new_row = Ci@linalg.fractional_matrix_power(A,t)
                 obser_i = np.vstack((obser_i,new_row))
-            obser_array[:,:,i:i+1] = obser_i.reshape(ss_problem.tspan,ss_problem.n,1)
-        self.obser = obser_array
+            obser_matrix_array[:,:,i:i+1] = obser_i.reshape(ss_problem.tspan,ss_problem.n,1)
+            print(obser_matrix_array)
+        return obser_matrix_array
 
-        # possible healthy sensor combinations
-        if possible_comb is None:
-            num_healthy_sensors = ss_problem.p-ss_problem.s
-            self.possible_comb = nchoosek([i for i in range(ss_problem.p)],num_healthy_sensors)
-
+    def construct_clean_measurement(self):
+        ss_problem = self.problem
         tilde_y = ss_problem.tilde_y_his
         u_seq = ss_problem.u_seq
         tspan = ss_problem.tspan
@@ -207,9 +227,9 @@ class SecureStateReconst():
             yi_list.append(yi)
         
         # y_his: shape (tspan, p) = [y1 y2 ... yp] for p sensors, and yi is a column vector [yi(0); yi(1); .... yi(tspan-1)] 
-        self.y_his = np.hstack(yi_list)
-        # print(f'shape of y_his: {self.y_his.shape}')
-
+        y_his = np.hstack(yi_list)
+        return y_his
+    
     def construct_fi(self,i):
         '''
         construct Fi according to Eq. 5 in the paper
@@ -227,13 +247,13 @@ class SecureStateReconst():
             fi[t:t+1,0:m] = Ci @ linalg.fractional_matrix_power(A,t) @ B 
         return fi
        
-    def construct_y_his_vec(self,comb):
-        measure_vec_list = []
-        for i in comb:
-            measure_i = self.y_his[:,i:i+1]
-            measure_vec_list.append(measure_i)
-        measure_vec = np.vstack(measure_vec_list)
-        return measure_vec
+    # def construct_y_his_vec(self,comb):
+    #     measure_vec_list = []
+    #     for i in comb:
+    #         measure_i = self.y_his[:,i:i+1]
+    #         measure_vec_list.append(measure_i)
+    #     measure_vec = np.vstack(measure_vec_list)
+    #     return measure_vec
 
     def solve_initial_state(self,error_bound = 1):
         '''
@@ -243,7 +263,9 @@ class SecureStateReconst():
         corresp_sensors_list = []
         residuals_list = []
         for comb in self.possible_comb:
+            # recall obser is in the shape of (tspan, n, p)
             obser_matrix = self.vstack_comb(self.obser,comb)
+            # recall y_his is in the shape of (tspan, p)
             measure_vec = self.vstack_comb(self.y_his,comb)
 
             # print(f'Observation matrix shape {obser_matrix.shape}, measure_vec shape {measure_vec.shape}')
@@ -282,7 +304,7 @@ class SecureStateReconst():
         current_states_list = []
         for ind in range(possible_states.shape[1]):
             init_state = possible_states[:,ind]
-            curr_state = self.problem.update_state(init_state,self.problem.u_seq)
+            curr_state = self.problem.update_state(self.problem.A, self.problem.B, init_state,self.problem.u_seq)
             current_states_list.append(curr_state)
         current_states = np.hstack(current_states_list)
         return current_states, corresp_sensors, corresp_sensors_list
@@ -340,9 +362,38 @@ class SecureStateReconst():
         assert linalg.norm(subprob_y - np.dstack(subprob_y_list))<= 1e-6
             
         return subprob_a, self.problem.C, subprob_y
-    
+
+    @classmethod
+    def vstack_comb(cls,array_to_stack:np.ndarray,comb:list = None,axis:int = None):
+        '''
+        vertically stack numpy array that is sliced along **axis** with some **combination**, 
+        default axis: last axis; default comb: full indices    
+
+        a = np.array([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5,2])
+        b = a.reshape(2,2,-1)
+        c = SecureStateReconstruct.vstack_comb(b,comb = [1,2],axis = 2) 
+        '''
+        if axis is None:
+            axis = array_to_stack.ndim-1 # last dimension
+        if comb is None:
+            p = array_to_stack.shape[axis]
+            comb = [i for i in range(p)]
+        temp_list = []
+        for i in comb:
+            temp_i = cls.slice_along_axis(array_to_stack,i,axis)
+            if temp_i.ndim == 1:
+                temp_i = temp_i.reshape(-1,1) # so temp_i becomes 2d column array
+            temp_list.append(temp_i)
+        stacked_array = np.vstack(temp_list)
+        return stacked_array
+        
     @staticmethod
     def unvstack(array_to_unstack:np.ndarray,row_count_for_a_slice:int):
+        '''
+        undo the vstack operation
+
+        array_to_unstack: 2d or 3d array
+        '''
         rows = array_to_unstack.shape[0]
         quotient, remainder = divmod(rows, row_count_for_a_slice) 
         if remainder !=0:
@@ -356,38 +407,14 @@ class SecureStateReconst():
             array_unstacked = np.dstack(temp_lst)
 
         return array_unstacked
-
-    @staticmethod
-    def vstack_comb(array_to_stack:np.ndarray,comb:list = None,axis:int = None):
-        '''
-        vertically stack numpy array that is sliced along **axis** with some **combination**, 
-        default axis: last axis; default comb: full indices    
-
-        a = np.array([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5,2])
-        b = a.reshape(2,2,-1)
-        c = SecureStateReconst.vstack_comb(b,comb = [1,2],axis = 2)
-        '''
-        if axis is None:
-            axis = array_to_stack.ndim-1 # last dimension
-        if comb is None:
-            p = array_to_stack.shape[axis]
-            comb = [i for i in range(p)]
-        temp_list = []
-        for i in comb:
-            temp_i = SecureStateReconst.slice_along_axis(array_to_stack,i,axis)
-            if temp_i.ndim == 1:
-                temp_i = temp_i.reshape(-1,1) # so temp_i becomes 2d column array
-            temp_list.append(temp_i)
-        stacked_array = np.vstack(temp_list)
-        return stacked_array
     
     @staticmethod
-    def slice_along_axis(arr, j, k):
+    def slice_along_axis(array, j, k):
         """
         Extract the j-th slice along the k-th axis of a d-dimensional array.
 
         Parameters:
-        arr (np.ndarray): The input d-dimensional array.
+        array (np.ndarray): The input d-dimensional array.
         j (int): The index of the slice to extract.
         k (int): The axis along which to extract the slice.
 
@@ -395,22 +422,22 @@ class SecureStateReconst():
         np.ndarray: The extracted slice.
         """
         # Create a full slice (:) for each dimension
-        index = [slice(None)] * arr.ndim
+        index = [slice(None)] * array.ndim
         
         # Replace the slice for the k-th axis with the specific index j
         index[k] = j
         
         # Convert the list to a tuple and use it to slice the array
-        return arr[tuple(index)]
+        return array[tuple(index)]
 
     @staticmethod
     def gen_eigenspace(eigval, am, A):
         '''
         Calculates generalized eigenspace of A corresp. to eigval
-        am -- algebraic multi
+        am -- algebraic multiplicity
         '''
-        temp_A = linalg.fractional_matrix_power(A - eigval*np.eye(A.shape[0]), am)
-        generalized_eigenspace = linalg.null_space(temp_A)
+        temp_matrix = linalg.fractional_matrix_power(A - eigval*np.eye(A.shape[0]), am)
+        generalized_eigenspace = linalg.null_space(temp_matrix)
         return generalized_eigenspace
         
     @staticmethod
@@ -447,30 +474,31 @@ if __name__ == "__main__":
     Cc = np.array([[1,0,0,0],[1,0,0,0],[0,1,0,0],[0,1,0,0],[0,0,1,0],[0,0,1,0],[0,0,0,1],[0,0,0,1]])
     # Cc = np.vstack((Cc,Cc)) # if given enough sensor redundancy
     Dc = np.zeros((Cc.shape[0],Bc.shape[1]))
-    p = np.shape(Cc)[0]
     s = 3
-    ss_problem = SSProblem(Ac,Bc,Cc,Dc,s)
 
-    # define attacking model
-    fake_state_count = 1
-    init_states = np.array([[1.,2.],[1.,2.],[1.,2.],[1.,1.]])
-    att_ind = [0,2,4] # sensors 1, 3, 5
-    # att_dic: which initial state and its corresponding sensors
-    # 0 -- healthy sensor, 1, 2, ... -- attacked sensors
-    att_dic = {0:[i for i in range(p) if i not in att_ind], 1:att_ind}
+    # generate discrete-time system
+    dtsys_a, dtsys_b, dtsys_c, dtsys_d = SSProblem.convert_ct_to_dt(Ac,Bc,Cc,Dc,TS)
+    # define input output data
+    init_state1 = np.array([[1.],[1.],[1.],[1.]])
+    init_state2 = np.array([[2.],[2.],[2.],[1.]])
+    # assume sensors 1,3,5 are under attack
+    sensor_initial_states = [init_state2,init_state1,init_state2,init_state1,
+                             init_state2,init_state1,init_state1,init_state1]
+    u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states,
+                                                                            s = s,is_noisy =  False, noise_level=0.00001)
 
-    ss_problem.gen_attack_measurement(s=3,att_dic = att_dic,fake_state_count=fake_state_count,
-                                        init_states=init_states,noise=True)
+    # construct a problem instance
+    ss_problem = SSProblem(dtsys_a, dtsys_b, dtsys_c, dtsys_d, tilde_y_his, 
+                           attack_sensor_count=s,input_sequence=u_seq,measurement_noise_level= noise_level )
     print(f'A: {ss_problem.A},  \n B: {ss_problem.B}, \n C:{ss_problem.C}, \n D:{ss_problem.D}')
     print('input_sequence:',ss_problem.u_seq)
-    print('measurement_y:',ss_problem.tilde_y_his)
-    print('(To be determined) true tates:',ss_problem.init_states[:,0])
-    print('(To be determined) fake tates:',ss_problem.init_states[:,1])
-    print(f'(To be determined) Attacked sensor(s) {ss_problem.att_dic.get(1)}')
+    print('tilde_y_his:',ss_problem.tilde_y_his)
 
     # define a solution instance
-    ssr_solution = SecureStateReconst(ss_problem)
-    possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1e-2)
+    ssr_solution = SecureStateReconstruct(ss_problem)
+    # possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1)
+    possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 0.01)
+
     if possible_states is not None:
         for ind in range(corresp_sensors.shape[0]):
             sensors = corresp_sensors[ind,:]
@@ -478,7 +506,7 @@ if __name__ == "__main__":
             print(f'Identified possible states:{state} for sensors {sensors}')
 
     # test decompostion method
-    y_his = ssr_solution.y_his
-    subprob_a, subprob_c, subprob_y = ssr_solution.gen_subssr_data(y_his)
+    # y_his = ssr_solution.y_his
+    # subprob_a, subprob_c, subprob_y = ssr_solution.gen_subssr_data(y_his)
 
-    subproblem1 = SSProblem(subprob_a[:,:,0],Bc,Cc,Dc,measurements = subprob_y[:,:,0],input_exist=False)
+    # subproblem1 = SSProblem(subprob_a[:,:,0],Bc,Cc,Dc,measurements = subprob_y[:,:,0],input_exist=False)
