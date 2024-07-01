@@ -5,7 +5,7 @@ from scipy import linalg
 import control as ct
 
 # sampling rate
-TS = 0.1
+TS = 0.01
 
 def nchoosek(v: List[int], k: int) -> List[List[int]]:
     """
@@ -42,7 +42,7 @@ class SSProblem():
     A, B, C, D: state-space system matrices,  2d-array
     n,m,p,s,io_length: integers
     input_sequence, output_sequence: 2d-array. Each row denotes input at one time instant. 
-    according to (5) in the paper, input output have the length.
+    according to (5) in the paper, input output have the same length.
     output_sequence[-1,:] is the most recent input/output at current time  t
     input_sequence[-1,:] is the input to be determined, and must be all zero when initializes.
     input_sequence[0,:]/output_sequence[0,:] is the earliest input/output at time  t-io_length+1 or 0
@@ -494,7 +494,7 @@ if __name__ == "__main__":
     sensor_initial_states = [init_state2,init_state1,init_state2,init_state1,
                              init_state2,init_state1,init_state1,init_state1]
     u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states,
-                                                                            s = s,is_noisy =  False, noise_level=0.00001,u_seq = None)
+                                                                            s = s,is_noisy = True, noise_level=0.001,u_seq = None)
 
     # construct a problem instance
     ss_problem = SSProblem(dtsys_a, dtsys_b, dtsys_c, dtsys_d, tilde_y_his, 
@@ -509,7 +509,7 @@ if __name__ == "__main__":
     ssr_solution = SecureStateReconstruct(ss_problem)
     # print(f'y_his: \n {ssr_solution.y_his}')
     # possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1)
-    possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 1)
+    possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 1e-3)
 
     if possible_states is not None:
         for ind in range(corresp_sensors.shape[0]):
