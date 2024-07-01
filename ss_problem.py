@@ -5,7 +5,7 @@ from scipy import linalg
 import control as ct
 
 # sampling rate
-TS = 0.4
+TS = 0.1
 
 def nchoosek(v: List[int], k: int) -> List[List[int]]:
     """
@@ -40,10 +40,12 @@ class SSProblem():
     
     Conventions: 
     A, B, C, D: state-space system matrices,  2d-array
-    n,m,p,s,tspan: integers
+    n,m,p,s,io_length: integers
     input_sequence, output_sequence: 2d-array. Each row denotes input at one time instant. 
-    input_sequence[0,:]/output_sequence[0,:] is the earliest input/output at time  t-tspan+1
-    input_sequence[-1,:]/output_sequence[-1,:] is the most recent input/output at time  t
+    according to (5) in the paper, input output have the length.
+    output_sequence[-1,:] is the most recent input/output at current time  t
+    input_sequence[-1,:] is the input to be determined, and must be all zero when initializes.
+    input_sequence[0,:]/output_sequence[0,:] is the earliest input/output at time  t-io_length+1 or 0
     '''
     def __init__(self, dtsys_a, dtsys_b, dtsys_c, dtsys_d, output_sequence, 
                  attack_sensor_count=2, input_sequence = None,measurement_noise_level= None) -> None:
@@ -52,7 +54,7 @@ class SSProblem():
         self.B = dtsys_b
         self.C = dtsys_c
         self.D = dtsys_d
-        self.tspan = output_sequence.shape[0]
+        self.io_length = output_sequence.shape[0]
         self.noise_level = measurement_noise_level
 
         self.n = np.shape(dtsys_a)[0] # dim of states
@@ -64,7 +66,7 @@ class SSProblem():
             self.u_seq = input_sequence
             self.tilde_y_his = output_sequence
         else:
-            self.u_seq = np.zeros((self.tspan,self.m))
+            self.u_seq = np.zeros((self.io_length,self.m))
             self.y_his = output_sequence   
 
 
@@ -75,9 +77,9 @@ class SSProblem():
         assert self.p == np.shape(self.C)[0]
         assert self.n == np.shape(self.C)[1]
 
-        assert self.tspan == np.shape(self.u_seq)[0]
+        assert self.io_length == np.shape(self.u_seq)[0]
         assert self.m == np.shape(self.u_seq)[1]
-        assert self.tspan == np.shape(output_sequence)[0]
+        assert self.io_length == np.shape(output_sequence)[0]
         assert self.p == np.shape(output_sequence)[1]
 
     @staticmethod
@@ -112,22 +114,22 @@ class SSProblem():
         u_seq: (t,m) array for multiple steps, (m,), (m,1), (1,m) array for one step update
         '''
         m = dtsys_b.shape[1]
-        tspan, remainder = divmod(u_seq.size, m)
+        duration, remainder = divmod(u_seq.size, m)
         if remainder != 0:
             raise ValueError("Number of inputs divided by input size must be an integer")
         else:
             x_old = state_array
-            if tspan ==1:
+            if duration ==1:
                 x_new = cls.update_state_one_step(dtsys_a, dtsys_b,x_old,u_seq)
             else:
-                for t in range(tspan):
+                for t in range(duration):
                     x_new = cls.update_state_one_step(dtsys_a, dtsys_b,x_old,u_seq[t,:])
                     x_old = x_new
         return x_new
     
     @classmethod         
     def generate_attack_measurement(cls,dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_indexed_init_state_list,
-                                    s = 2, is_noisy = True, noise_level = 0.001, tspan = None,u_seq = None):
+                                    s = 2, is_noisy = True, noise_level = 0.001, io_length = None,u_seq = None):
         '''
         Generate the worst-case attack by assuming that the attacker tries to confuse the system with some states. 
         The correspondence between sensors and states is given in att_dic
@@ -143,18 +145,18 @@ class SSProblem():
         p = dtsys_c.shape[0]
 
         # measurement steps
-        if tspan is None:
-            tspan = n
+        if io_length is None:
+            io_length = n
         # input sequence
         if u_seq is None:
         # random input_sequence, oldest input comes first, e.g., u_seq[0,:] -> u(0) 
-            u_seq = np.random.uniform(-5,5,(tspan,m))
+            u_seq = np.random.uniform(-5,5,(io_length,m))
             u_seq[-1,:] = 0.0
 
         init_states = np.hstack(sensor_indexed_init_state_list)
         xt_new = init_states
-        tilde_y_his = np.zeros((tspan,p))
-        for t in range(tspan):
+        tilde_y_his = np.zeros((io_length,p))
+        for t in range(io_length):
             for i in range(p):
                 corres_state = xt_new[:,i:i+1]
                 # print(f'sensor {i}, corres. state {corres_state}')
@@ -167,7 +169,7 @@ class SSProblem():
             xt_new = cls.update_state(dtsys_a,dtsys_b,xt_old,u_seq[t,:])
 
         if is_noisy:
-            tilde_y_his = tilde_y_his + np.random.normal(0,float(noise_level),(tspan,p))
+            tilde_y_his = tilde_y_his + np.random.normal(0,float(noise_level),(io_length,p))
 
 
         return u_seq, tilde_y_his, noise_level
@@ -178,7 +180,7 @@ class SecureStateReconstruct():
     '''
     def __init__(self, ss_problem:SSProblem,possible_comb = None) -> None:
         self.problem = ss_problem
-        # 3d narray, shape (tspan, n, p)
+        # 3d narray, shape (io_length, n, p)
         self.obser = self.construct_observability_matrices()
 
         # possible healthy sensor combinations
@@ -192,41 +194,42 @@ class SecureStateReconstruct():
         if hasattr(ss_problem,'y_his'):
             self.y_his = ss_problem.y_his
         else:
-            # 2d narray, shape (tspan, p)
+            # 2d narray, shape (io_length, p). Definition per (5)
             self.y_his = self.construct_clean_measurement()
 
     def construct_observability_matrices(self):
         ss_problem = self.problem
-        obser_matrix_array = np.zeros((ss_problem.tspan,ss_problem.n,ss_problem.p))
+        obser_matrix_array = np.zeros((ss_problem.io_length,ss_problem.n,ss_problem.p))
 
         A = ss_problem.A
         for i in range(ss_problem.p):
             Ci = ss_problem.C[i:i+1,:]
             obser_i = Ci@linalg.fractional_matrix_power(A,0)
-            for t in range(1,ss_problem.tspan):
+            for t in range(1,ss_problem.io_length):
                 new_row = Ci@linalg.fractional_matrix_power(A,t)
                 obser_i = np.vstack((obser_i,new_row))
-            obser_matrix_array[:,:,i:i+1] = obser_i.reshape(ss_problem.tspan,ss_problem.n,1)
-            print(obser_matrix_array)
+            obser_matrix_array[:,:,i:i+1] = obser_i.reshape(ss_problem.io_length,ss_problem.n,1)
         return obser_matrix_array
 
     def construct_clean_measurement(self):
         ss_problem = self.problem
         tilde_y = ss_problem.tilde_y_his
         u_seq = ss_problem.u_seq
-        tspan = ss_problem.tspan
-        u_list = [u_seq[t,:] for t in range(tspan)]
+        io_length = ss_problem.io_length
+        # Check (5) for definition
+        # u_list = [input at time t_now - io_length+1, input at time t_now -io_length+2, ..., input at time t_now]
+        u_list = [u_seq[t,:] for t in range(io_length)]
         u_vec = np.vstack(u_list).reshape(-1,1) # 2d column array
 
         # yi
         yi_list = []
         for i in range(ss_problem.p):
-            tilde_yi = tilde_y[:,i:i+1] #2d array of dimension (tspan,1)
-            fi = self.construct_fi(i) #2d array of dimension (tspan,tspan*m)
-            yi = tilde_yi - fi@u_vec #2d array of dimension (tspan,1)
+            tilde_yi = tilde_y[:,i:i+1] #2d array of dimension (io_length,1)
+            fi = self.construct_fi(i) #2d array of dimension (io_length,io_length*m)
+            yi = tilde_yi - fi@u_vec #2d array of dimension (io_length,1)
             yi_list.append(yi)
         
-        # y_his: shape (tspan, p) = [y1 y2 ... yp] for p sensors, and yi is a column vector [yi(0); yi(1); .... yi(tspan-1)] 
+        # y_his: shape (io_length, p) = [y1 y2 ... yp] for p sensors, and yi is a column 2d array [yi(0); yi(1); .... yi(io_length-1)] 
         y_his = np.hstack(yi_list)
         return y_his
     
@@ -237,14 +240,16 @@ class SecureStateReconstruct():
         Ci = self.problem.C[i,:]
         A = self.problem.A
         B = self.problem.B
-        tspan = self.problem.tspan
+        io_length = self.problem.io_length
         m = self.problem.m
        
-        fi = np.zeros((tspan,tspan*m))
-        for t in range(1,tspan):
+        fi = np.zeros((io_length,io_length*m))
+        # note that row count of Fi  =  io_length. The first row is zeros. 
+        # see (5) for definition
+        for t in range(1,io_length):
             fi[t:t+1,:] = right_shift_row_array(fi[t-1:t,:],m)
-            # here at the t-th row, t = 1,...,tspan -1, the left most element is Ci A^t B. 
-            fi[t:t+1,0:m] = Ci @ linalg.fractional_matrix_power(A,t) @ B 
+            # here for t-th row, t = 1,...,io_length -1, add the left most element Ci A^t B. 
+            fi[t:t+1,0:m] = Ci @ linalg.fractional_matrix_power(A,t-1) @ B 
         return fi
        
     # def construct_y_his_vec(self,comb):
@@ -263,10 +268,12 @@ class SecureStateReconstruct():
         corresp_sensors_list = []
         residuals_list = []
         for comb in self.possible_comb:
-            # recall obser is in the shape of (tspan, n, p)
+            # recall obser is in the shape of (io_length, n, p)
             obser_matrix = self.vstack_comb(self.obser,comb)
-            # recall y_his is in the shape of (tspan, p)
+            # print(f'obser_matrix for comb {comb} is \n {obser_matrix}')
+            # recall y_his is in the shape of (io_length, p)
             measure_vec = self.vstack_comb(self.y_his,comb)
+            # print(f'corresponding measurement is \n {measure_vec}')
 
             # print(f'Observation matrix shape {obser_matrix.shape}, measure_vec shape {measure_vec.shape}')
             state, residuals, rank, _ = linalg.lstsq(obser_matrix,measure_vec)
@@ -286,6 +293,7 @@ class SecureStateReconstruct():
         if len(possible_states_list)>0:
             # here we remove the states that yields 100x smallest residual
             residual_min = min(residuals_list)
+            print(f'residual min is {residual_min}')
             comb_list = [i for i in range(len(residuals_list)) if residuals_list[i]<10*residual_min]
             possible_states_list = [possible_states_list[index] for index in comb_list]
             corresp_sensors_list = [corresp_sensors_list[index] for index in comb_list]
@@ -331,10 +339,10 @@ class SecureStateReconstruct():
             for k in range(geigspace.shape[1]):
                 obser_subspace_vec = obser_full@geigspace[:,k]
                 obser_subspace_vec = obser_subspace_vec.reshape(-1,1) #N*1 2d array
-                print(f'shape of obser_subspace_vec: {obser_subspace_vec.shape}')
+                # print(f'shape of obser_subspace_vec: {obser_subspace_vec.shape}')
                 obser_subspace_vec_list.append(obser_subspace_vec)
             obser_subspace = np.hstack(obser_subspace_vec_list)
-            print(f'shape of obser_subspace: {obser_subspace.shape}')
+            # print(f'shape of obser_subspace: {obser_subspace.shape}')
 
             geig_space_list.append(geigspace)
             gobser_space_list.append(obser_subspace)
@@ -350,9 +358,9 @@ class SecureStateReconstruct():
             proj_a_j = proj_gs_j@self.problem.A # 2d array
             y_his_vec = self.vstack_comb(self.y_his)
             print(f'shape of proj_obs_j: {proj_obs_j.shape}, shape of y_his_vec: {y_his_vec.shape}')
-            proj_y_his_j_vec =  proj_obs_j@y_his_vec # 2d column array, [y1(0), y1(1), ...,y1(tspan-1), y2(0), ....]
+            proj_y_his_j_vec =  proj_obs_j@y_his_vec # 2d column array, [y1(0), y1(1), ...,y1(io_length-1), y2(0), ....]
             subprob_a_list.append(proj_a_j)
-            proj_y_his_j = self.unvstack(proj_y_his_j_vec,self.problem.tspan)
+            proj_y_his_j = self.unvstack(proj_y_his_j_vec,self.problem.io_length)
             subprob_y_list.append(proj_y_his_j)
 
         subprob_a = np.dstack(subprob_a_list).real
@@ -481,23 +489,27 @@ if __name__ == "__main__":
     # define input output data
     init_state1 = np.array([[1.],[1.],[1.],[1.]])
     init_state2 = np.array([[2.],[2.],[2.],[1.]])
+    # u_seq = np.array([[1,1],[1,1],[1,1],[0,0]])
     # assume sensors 1,3,5 are under attack
     sensor_initial_states = [init_state2,init_state1,init_state2,init_state1,
                              init_state2,init_state1,init_state1,init_state1]
     u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states,
-                                                                            s = s,is_noisy =  False, noise_level=0.00001)
+                                                                            s = s,is_noisy =  False, noise_level=0.00001,u_seq = None)
 
     # construct a problem instance
     ss_problem = SSProblem(dtsys_a, dtsys_b, dtsys_c, dtsys_d, tilde_y_his, 
                            attack_sensor_count=s,input_sequence=u_seq,measurement_noise_level= noise_level )
-    print(f'A: {ss_problem.A},  \n B: {ss_problem.B}, \n C:{ss_problem.C}, \n D:{ss_problem.D}')
-    print('input_sequence:',ss_problem.u_seq)
-    print('tilde_y_his:',ss_problem.tilde_y_his)
+    print(f'A: \n {ss_problem.A},  \n B:\n  {ss_problem.B}, \n C: \n {ss_problem.C}, \n D:\n {ss_problem.D}')
+    # print('input_sequence:',ss_problem.u_seq)
+    # print('tilde_y_his:',ss_problem.tilde_y_his)
 
     # define a solution instance
+    # comb1 = [[0,2,4,6,7],[0,1,4,6,7]]
+    # ssr_solution = SecureStateReconstruct(ss_problem,possible_comb=comb1)
     ssr_solution = SecureStateReconstruct(ss_problem)
+    # print(f'y_his: \n {ssr_solution.y_his}')
     # possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1)
-    possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 0.01)
+    possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 1)
 
     if possible_states is not None:
         for ind in range(corresp_sensors.shape[0]):
