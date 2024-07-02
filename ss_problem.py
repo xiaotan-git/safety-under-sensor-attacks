@@ -6,6 +6,7 @@ import control as ct
 
 # sampling rate
 TS = 0.01
+EPS = 1e-6
 
 def nchoosek(v: List[int], k: int) -> List[List[int]]:
     """
@@ -294,7 +295,8 @@ class SecureStateReconstruct():
             # here we remove the states that yields 100x smallest residual
             residual_min = min(residuals_list)
             print(f'residual min is {residual_min}')
-            comb_list = [i for i in range(len(residuals_list)) if residuals_list[i]<10*residual_min]
+            # comb_list = [i for i in range(len(residuals_list)) if residuals_list[i]<10*residual_min]
+            comb_list = [i for i in range(len(residuals_list)) ]
             possible_states_list = [possible_states_list[index] for index in comb_list]
             corresp_sensors_list = [corresp_sensors_list[index] for index in comb_list]
             possible_states = np.hstack(possible_states_list)
@@ -317,11 +319,13 @@ class SecureStateReconstruct():
         current_states = np.hstack(current_states_list)
         return current_states, corresp_sensors, corresp_sensors_list
 
-    def gen_subssr_data(self,y_his):
+    def generate_subssr_data(self):
         '''
         generate data A^(j), C_i, Y_i^j for sensor i = 1,...,p and generalized eigenspace V^j, j = 1,...,r
         subprob_a, subprob_c, subprob_y = self.gen_subssr_data(y_his)
         A^(j), C_i, Y_i^j = subprob_a[:,:,j], subprob_c[i,:], subprob_y[:,i,j]
+
+        For more details: Y. Mao, A. Mitra, S. Sundaram, and P. Tabuada, “On the computational complexity of the secure state-reconstruction problem,” Automatica, vol. 136, p. 110083, 2022
         '''
         eigval_a = linalg.eigvals(self.problem.A)
         unique_eigvals, counts = np.unique(eigval_a,return_counts = True)
@@ -329,30 +333,30 @@ class SecureStateReconstruct():
         r = len(unique_eigvals)
         obser_full = self.vstack_comb(self.obser)
 
-        geig_space_list = []
-        gobser_space_list = []
+        generalized_eigenspace_list = [] # for a list of V^j
+        observable_space_list = [] # for a list of O(V^j)
         for j in range(r):
             eigval =  unique_eigvals[j]
             am = counts[j]
-            geigspace = self.gen_eigenspace(eigval,am, self.problem.A)
-            obser_subspace_vec_list = []
-            for k in range(geigspace.shape[1]):
-                obser_subspace_vec = obser_full@geigspace[:,k]
+            generalized_eigspace = self.compute_generalized_eigenspace(eigval,am, self.problem.A)
+            obser_subspace_vec_list = [] # here independent basis for the subspace O(V^j)
+            for k in range(generalized_eigspace.shape[1]):
+                obser_subspace_vec = obser_full@generalized_eigspace[:,k]
                 obser_subspace_vec = obser_subspace_vec.reshape(-1,1) #N*1 2d array
                 # print(f'shape of obser_subspace_vec: {obser_subspace_vec.shape}')
                 obser_subspace_vec_list.append(obser_subspace_vec)
             obser_subspace = np.hstack(obser_subspace_vec_list)
             # print(f'shape of obser_subspace: {obser_subspace.shape}')
 
-            geig_space_list.append(geigspace)
-            gobser_space_list.append(obser_subspace)
+            generalized_eigenspace_list.append(generalized_eigspace)
+            observable_space_list.append(obser_subspace)
 
         subprob_a_list = []
         subprob_y_list = []
         for j in range(r):
             # for the generalized eigenspace V^j
-            proj_gs_j = self.construct_proj(geig_space_list,j) # This is P_j: R^n -> V^j
-            proj_obs_j = self.construct_proj(gobser_space_list,j) # This is tilde_P_j: O(R^n) -> O(V^j)
+            proj_gs_j = self.construct_proj(generalized_eigenspace_list,j) # This is P_j: R^n -> V^j
+            proj_obs_j = self.construct_proj(observable_space_list,j) # This is tilde_P_j: O(R^n) -> O(V^j)
 
             # construct a,c,y for subspace V^j
             proj_a_j = proj_gs_j@self.problem.A # 2d array
@@ -363,11 +367,13 @@ class SecureStateReconstruct():
             proj_y_his_j = self.unvstack(proj_y_his_j_vec,self.problem.io_length)
             subprob_y_list.append(proj_y_his_j)
 
+        # 3d narray with dimension (n,n,r)
         subprob_a = np.dstack(subprob_a_list).real
+        # 3d naaray with dimension (io_length,p,r)
         subprob_y = np.dstack(subprob_y_list).real
 
-        assert linalg.norm(subprob_a - np.dstack(subprob_a_list))<= 1e-6
-        assert linalg.norm(subprob_y - np.dstack(subprob_y_list))<= 1e-6
+        assert linalg.norm(subprob_a - np.dstack(subprob_a_list))<= EPS
+        assert linalg.norm(subprob_y - np.dstack(subprob_y_list))<= EPS
             
         return subprob_a, self.problem.C, subprob_y
 
@@ -437,9 +443,110 @@ class SecureStateReconstruct():
         
         # Convert the list to a tuple and use it to slice the array
         return array[tuple(index)]
+    
+    @classmethod
+    def compute_sys_eigenproperty(cls,A,output_gen_eigenspace = True):
+        '''
+        compute eigenvalue, (generalized) eigenspace related properties given system transition matrix A
+
+        return unique_eigvals, (generalized) eigenspace, am_list, gm_list
+        '''
+        eigval_a = linalg.eigvals(A)
+        unique_eigvals, counts = np.unique(eigval_a,return_counts = True)
+        # total number of subspaces V^j, j = 1,..., r
+        r = len(unique_eigvals)
+
+        generalized_eigenspace_list = [] # for a list of V^j
+        eigenspace_list = [] # for a list of eigenspace
+        am_list = [] # a list for algebraic mutiplicities
+        gm_list = [] # a list for geometric multiplicities
+        for j in range(r):
+            eigval =  unique_eigvals[j]
+            am = counts[j]
+            generalized_eigspace = cls.compute_generalized_eigenspace(eigval,am, A)
+            I_n = np.eye(A.shape)
+            eigenspace = linalg.null_space(A - eigval*I_n)
+            gm = eigenspace.shape[1]
+            
+            generalized_eigenspace_list.append(generalized_eigspace)
+            eigenspace_list.append(eigenspace)
+            am_list.append(am)
+            gm_list.append(gm)
+        if output_gen_eigenspace:
+            return unique_eigvals, generalized_eigenspace_list, am_list, gm_list
+        else:
+            return unique_eigvals, eigenspace_list, am_list, gm_list
 
     @staticmethod
-    def gen_eigenspace(eigval, am, A):
+    def compute_sparse_observability(A,C, is_scalar_measurement = True):
+        '''
+        compute sparse observability index given system matrices A,C. Currently only working for scalar measurement
+        '''
+        pass
+
+    @classmethod
+    def compute_eigenvalue_observability(cls,A,C, is_scalar_measurement=True):
+        '''
+        compute eigenvalue observability index given system matrices A, C. Currently only working for scalar measurement
+        '''
+        unique_eigvals, eigenspace_list, am_list, gm_list = cls.compute_sys_eigenproperty(A)
+        eigenvalue_observability_ind = C.shape[1]
+        for j in range(unique_eigvals.shape[1]):
+            eigenval = unique_eigvals[:,j]
+            ind_j = cls.compute_eigenvalue_obser_index_sensors(A,C,eigenval) # eigenvalue obser index for eigenvalue j
+            eigenvalue_observability_ind = min(eigenvalue_observability_ind,ind_j)
+
+        return eigenvalue_observability_ind
+        
+    @classmethod
+    def compute_eigenvalue_obser_index_sensors(cls,A,C,eigenval_j,unique_eigvals = None,is_scalar_measurement=True):
+        '''
+        compute eigenvalue observability index for eigenval j given system matrices A, C. 
+        i.e., it finds out how many sensors eigenval j is eigenvalue observable w.r.t. and then minus one to that number 
+        Currently only working for scalar measurement
+        '''
+        eigenvalue_observ_ind = 0
+        for i in range(C.shape[1]):
+            C_i = C[i,:]
+            if cls.is_eigenvalue_observable_onesensor(A,C_i,eigenval_j,unique_eigvals=unique_eigvals):
+                eigenvalue_observ_ind = eigenvalue_observ_ind + 1
+        return (eigenvalue_observ_ind-1) # due to the definition in the paper
+
+    @classmethod
+    def is_eigenvalue_observable_onesensor(cls,A,C_i,eigenval_j,unique_eigvals = None):
+        '''
+        check if eigenvalue_j is observable with respect to sensor i
+        '''
+        eigenval_j = cls.find_closest_eigenvalue(A,eigenval_j)
+        n = A.shape[0]
+        I_n = np.eye(n)
+        mat = np.vstack([A -eigenval_j*I_n, C_i.reshape(-1,n)] )
+        rank = np.linalg.matrix_rank(mat)
+
+        if rank == n:
+            return True
+        else:
+            return False
+
+    @classmethod
+    def find_closest_eigenvalue(cls,A,eigenval_to_test):
+        '''
+        return one eigenvalue of A that is closest to eigenval_to_test. 
+        This step is mainly to reduce numerical trancation error
+        '''
+        unique_eigvals, _, _, _ = cls.compute_sys_eigenproperty(A)
+
+        # check if eigenval is in unique_eigvals
+        temp = linalg.norm(unique_eigvals - eigenval_to_test.reshape(-1,1),axis=1)
+        if np.min(temp)<EPS:
+            ind = np.argmin(temp)
+            return unique_eigvals[ind] 
+        else:
+            Warning('eigenval_to_test is far from any eigenvalues of A')
+            return None
+
+    @staticmethod
+    def compute_generalized_eigenspace(eigval, am, A):
         '''
         Calculates generalized eigenspace of A corresp. to eigval
         am -- algebraic multiplicity
@@ -452,16 +559,17 @@ class SecureStateReconstruct():
     def construct_proj(subspace_list,j):
         '''
         construct the projection matrix from the whole space to the jth subspace, i.e., 
-        v = sum_j vj, vj = Pj*v, vj \in subspace_j
+        v = sum_j vj, vj = Pj*v, vj \in V_j, the subspace j
         Moreover, we know Pj*spj = spj, Pj*spi = 0 . To calculate Pj, we choose a basis for the whole space 
         V = (sp1,...,spj,...,spr). Based on [0, ..., spj, ...., 0] = Pj* [sp1, ..., spj, ...., spr] and 
         V is full column rank, we know
         ************  Pj = [0, ..., spj, ...., 0] (V^T V)^{-1} V^T   **************
         '''
-        full_space = np.hstack(subspace_list) #  (sp1, sp2, ..., spr)
+        full_space = np.hstack(subspace_list) #  = V = (sp1, sp2, ..., spr)
         rank_full_space = np.linalg.matrix_rank(full_space)
         assert rank_full_space == full_space.shape[1]
-
+        
+        # to construct [0, ..., spj, ...., 0] 
         tem_list = []
         for item in range(len(subspace_list)):
             subspace = subspace_list[j]
@@ -503,22 +611,48 @@ if __name__ == "__main__":
     # print('input_sequence:',ss_problem.u_seq)
     # print('tilde_y_his:',ss_problem.tilde_y_his)
 
-    # define a solution instance
+    # define and test a solution instance
+    is_testing_ssr = False
     # comb1 = [[0,2,4,6,7],[0,1,4,6,7]]
     # ssr_solution = SecureStateReconstruct(ss_problem,possible_comb=comb1)
     ssr_solution = SecureStateReconstruct(ss_problem)
-    # print(f'y_his: \n {ssr_solution.y_his}')
-    # possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1)
-    possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 1e-3)
+    if is_testing_ssr:
+        # print(f'y_his: \n {ssr_solution.y_his}')
+        # possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1)
+        possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 1e-3)
 
-    if possible_states is not None:
-        for ind in range(corresp_sensors.shape[0]):
-            sensors = corresp_sensors[ind,:]
-            state = possible_states[:,ind]
-            print(f'Identified possible states:{state} for sensors {sensors}')
+        if possible_states is not None:
+            for ind in range(corresp_sensors.shape[0]):
+                sensors = corresp_sensors[ind,:]
+                state = possible_states[:,ind]
+                print(f'Identified possible states:{state} for sensors {sensors}')
 
+# *************** below are algorithms under development **********************#
     # test decompostion method
-    # y_his = ssr_solution.y_his
-    # subprob_a, subprob_c, subprob_y = ssr_solution.gen_subssr_data(y_his)
+    is_testing_subssr = True
+    if is_testing_subssr:
+        # sparse observability index
+        # eigenvalue observability index
 
-    # subproblem1 = SSProblem(subprob_a[:,:,0],Bc,Cc,Dc,measurements = subprob_y[:,:,0],input_exist=False)
+        # decompose ssr to sub_ssr problems
+        subprob_a, subprob_c, subprob_y = ssr_solution.generate_subssr_data()
+        print(f'generalized eigenspace count: {subprob_a.shape[2]}')
+
+        # solve sub_ssr problem, return possible states and corresponding attacked sensors
+
+        # check for sensor compatibility and generate possible initial states
+
+        # give cbf parameters H, q, gamma, solve for input feasible region
+
+        # for j in range(subprob_a.shape[2]):
+        #     sub_a = subprob_a[:,:,j]
+        #     sub_c = subprob_c
+        #     sub_y_his = subprob_y[:,:,j]
+        #     subproblem = SSProblem(sub_a, dtsys_b, sub_c, dtsys_d,sub_y_his, attack_sensor_count=s,measurement_noise_level=noise_level)
+        #     sub_solution = SecureStateReconstruct(subproblem)
+        #     possible_states,corresp_sensors, _ = sub_solution.solve_initial_state(error_bound = 1)
+            # if possible_states is not None:
+            #     for ind in range(corresp_sensors.shape[0]):
+            #         sensors = corresp_sensors[ind,:]
+            #         state = possible_states[:,ind]
+            #         print(f'Identified possible states:{state} for sensors {sensors}')
