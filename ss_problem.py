@@ -2,6 +2,7 @@ from typing import List
 import itertools
 import numpy as np
 from scipy import linalg
+import mpmath as mpm
 import control as ct
 
 # sampling rate
@@ -261,7 +262,7 @@ class SecureStateReconstruct():
     #     measure_vec = np.vstack(measure_vec_list)
     #     return measure_vec
 
-    def solve_initial_state(self,error_bound = 1):
+    def solve_initial_state(self,error_bound = 1,is_fullspace=True, subspaces = None):
         '''
         The method solves a given SSR problem and yields possible initial states, currently in a brute-force approach. 
         '''
@@ -277,19 +278,22 @@ class SecureStateReconstruct():
             # print(f'corresponding measurement is \n {measure_vec}')
 
             # print(f'Observation matrix shape {obser_matrix.shape}, measure_vec shape {measure_vec.shape}')
-            state, residuals, rank, _ = linalg.lstsq(obser_matrix,measure_vec)
+            if is_fullspace:
+                state, residuals, rank, _ = linalg.lstsq(obser_matrix,measure_vec)
+            else:
+                state, residuals, rank = self.solve_lstsq_from_subspace(obser_matrix,measure_vec,subspaces)
 
-            if len(residuals)<1:
-                # print(f'combinations: {comb}')
-                residuals = linalg.norm(obser_matrix@state - measure_vec,ord=2)**2
+            # if len(residuals)<1:
+            #     # print(f'combinations: {comb}')
+            #     residuals = linalg.norm(obser_matrix@state - measure_vec,ord=2)**2
 
             if residuals <error_bound:
                 possible_states_list.append(state)
                 corresp_sensors_list.append(comb)
                 residuals_list.append(residuals)
                 # print(f'residuals: {residuals}')
-                if rank < obser_matrix.shape[1]:
-                    print(f'Warning: observation matrix for sensors in {comb} is of deficient rank {rank}.')
+                # if rank < obser_matrix.shape[1]:
+                    # print(f'Warning: observation matrix for sensors in {comb} is of deficient rank {rank}.')
 
         if len(possible_states_list)>0:
             # here we remove the states that yields 100x smallest residual
@@ -331,7 +335,7 @@ class SecureStateReconstruct():
         unique_eigvals, counts = np.unique(eigval_a,return_counts = True)
         # total number of subspaces V^j, j = 1,..., r
         r = len(unique_eigvals)
-        obser_full = self.vstack_comb(self.obser)
+        obser_full = self.vstack_comb(self.obser) # vertically, (O_1, O_2, ..., O_p)
 
         generalized_eigenspace_list = [] # for a list of V^j
         observable_space_list = [] # for a list of O(V^j)
@@ -341,8 +345,8 @@ class SecureStateReconstruct():
             generalized_eigspace = self.compute_generalized_eigenspace(eigval,am, self.problem.A)
             obser_subspace_vec_list = [] # here independent basis for the subspace O(V^j)
             for k in range(generalized_eigspace.shape[1]):
-                obser_subspace_vec = obser_full@generalized_eigspace[:,k]
-                obser_subspace_vec = obser_subspace_vec.reshape(-1,1) #N*1 2d array
+                obser_subspace_vec = obser_full@generalized_eigspace[:,k] #N*1 2d array
+                obser_subspace_vec = obser_subspace_vec.reshape(-1,1) 
                 # print(f'shape of obser_subspace_vec: {obser_subspace_vec.shape}')
                 obser_subspace_vec_list.append(obser_subspace_vec)
             obser_subspace = np.hstack(obser_subspace_vec_list)
@@ -353,27 +357,54 @@ class SecureStateReconstruct():
 
         subprob_a_list = []
         subprob_y_list = []
+        project_obs_list = []
         for j in range(r):
             # for the generalized eigenspace V^j
             proj_gs_j = self.construct_proj(generalized_eigenspace_list,j) # This is P_j: R^n -> V^j
             proj_obs_j = self.construct_proj(observable_space_list,j) # This is tilde_P_j: O(R^n) -> O(V^j)
+            project_obs_list.append(proj_obs_j)
 
-            # construct a,c,y for subspace V^j
+            # construct subsystem data A_j, C_j, Y_j for subspace V^j
             proj_a_j = proj_gs_j@self.problem.A # 2d array
-            y_his_vec = self.vstack_comb(self.y_his)
+            y_his_vec = self.vstack_comb(self.y_his) # recall y_his is (io_length, p)
             print(f'shape of proj_obs_j: {proj_obs_j.shape}, shape of y_his_vec: {y_his_vec.shape}')
             proj_y_his_j_vec =  proj_obs_j@y_his_vec # 2d column array, [y1(0), y1(1), ...,y1(io_length-1), y2(0), ....]
             subprob_a_list.append(proj_a_j)
+            # check unvstack
             proj_y_his_j = self.unvstack(proj_y_his_j_vec,self.problem.io_length)
+            print(f'proj_y_his_j_vec: {proj_y_his_j_vec}')
+            print(f'proj_y_his_j: {proj_y_his_j}')
             subprob_y_list.append(proj_y_his_j)
 
         # 3d narray with dimension (n,n,r)
-        subprob_a = np.dstack(subprob_a_list).real
+        subprob_a = np.dstack(subprob_a_list)
         # 3d naaray with dimension (io_length,p,r)
-        subprob_y = np.dstack(subprob_y_list).real
+        subprob_y = np.dstack(subprob_y_list)
 
-        assert linalg.norm(subprob_a - np.dstack(subprob_a_list))<= EPS
-        assert linalg.norm(subprob_y - np.dstack(subprob_y_list))<= EPS
+        # this is true only if the eigenvalues are reals.
+        # assert linalg.norm(subprob_a - subprob_a.real)<= EPS
+        # assert linalg.norm(subprob_y - subprob_y.real)<= EPS
+        if linalg.norm(subprob_a - subprob_a.real)<= EPS:
+            subprob_a = subprob_a.real
+        if linalg.norm(subprob_y - subprob_y.real)<= EPS:
+            subprob_y = subprob_y.real
+
+        # test if the projected subproblem is correct
+        x = np.random.normal(3,3,size=(self.problem.n,1))
+        ax = self.problem.A@x
+        oy = obser_full@x
+
+        ax_prime = np.zeros((self.problem.n,1))
+        oy_prime = np.zeros((self.problem.n*self.problem.p,1))
+        for j in range(r):
+            ax_j = subprob_a[:,:,j]@x
+            ax_prime = ax_prime + ax_j
+
+            oy_j = project_obs_list[j]@oy
+            oy_prime = oy_prime + oy_j
+        assert linalg.norm(ax - ax_prime)<= EPS
+        # print(f'linalg.norm(oy - oy_prime) {linalg.norm(oy - oy_prime)}')
+        assert linalg.norm(oy - oy_prime)<= EPS
             
         return subprob_a, self.problem.C, subprob_y
 
@@ -405,13 +436,31 @@ class SecureStateReconstruct():
     def unvstack(array_to_unstack:np.ndarray,row_count_for_a_slice:int):
         '''
         undo the vstack operation
-
         array_to_unstack: 2d or 3d array
+
+        Example:
+        a = np.array(range(12))
+        a = a.reshape(-1,1)
+        # print(f'a before unvstack: {a}')
+        io_len = 4
+        a_prime = SecureStateReconstruct.unvstack(a,io_len)
+        # a_prime = [[ 0  4  8]
+        # [ 1  5  9]
+        # [ 2  6 10]
+        # [ 3  7 11]]
+
+        a = np.array(range(24))
+        a = a.reshape(-1,2)
+        print(f'a before unvstack: {a}')
+        io_len = 4
+        a_prime = SecureStateReconstruct.unvstack(a,io_len)
+        print(f' {a_prime[:,:,0]}') # [[0, 1], [2, 3],[4,5],[6,7]]
+
         '''
         rows = array_to_unstack.shape[0]
         quotient, remainder = divmod(rows, row_count_for_a_slice) 
         if remainder !=0:
-            Warning('unable to unvstack the array')
+            print('Warning:unable to unvstack the array')
         temp_lst = []
         for i in range(quotient):
             temp_lst.append(array_to_unstack[i*row_count_for_a_slice:(i+1)*row_count_for_a_slice,:])
@@ -464,8 +513,9 @@ class SecureStateReconstruct():
             eigval =  unique_eigvals[j]
             am = counts[j]
             generalized_eigspace = cls.compute_generalized_eigenspace(eigval,am, A)
-            I_n = np.eye(A.shape)
-            eigenspace = linalg.null_space(A - eigval*I_n)
+
+            I_n = np.eye(A.shape[0])
+            eigenspace = linalg.null_space(A - eigval*I_n,rcond=EPS)
             gm = eigenspace.shape[1]
             
             generalized_eigenspace_list.append(generalized_eigspace)
@@ -477,12 +527,37 @@ class SecureStateReconstruct():
         else:
             return unique_eigvals, eigenspace_list, am_list, gm_list
 
-    @staticmethod
-    def compute_sparse_observability(A,C, is_scalar_measurement = True):
+    @classmethod
+    def compute_sparse_observability(cls,A,C, is_scalar_measurement = True):
         '''
         compute sparse observability index given system matrices A,C. Currently only working for scalar measurement
         '''
-        pass
+        p = C.shape[0]
+        soi = p
+        for k in range(1,p+1):
+            if cls.is_s_sparse_observability(A,C,k):
+                pass
+            else:
+                return k-1 # removing k sensors fail the observability check
+
+    @staticmethod
+    def is_s_sparse_observability(A,C, s, is_scalar_measurement = True):
+        '''
+        check if given system matrices A,C is s-sparse observable. Currently only working for scalar measurement
+        '''
+        p = C.shape[0]
+        if s == p:
+            return False
+        comb_list = nchoosek([i for i in range(p)], p - s)
+        for comb in comb_list:
+            C_comb = C[comb,:]
+            # print(f'C_comb: {C_comb}')
+            obser = ct.obsv(A,C_comb)
+            # print(f's: {s}, np.linalg.matrix_rank(obser): {np.linalg.matrix_rank(obser)}')
+            if np.linalg.matrix_rank(obser) != A.shape[0]:
+                return False
+
+        return True
 
     @classmethod
     def compute_eigenvalue_observability(cls,A,C, is_scalar_measurement=True):
@@ -490,9 +565,12 @@ class SecureStateReconstruct():
         compute eigenvalue observability index given system matrices A, C. Currently only working for scalar measurement
         '''
         unique_eigvals, eigenspace_list, am_list, gm_list = cls.compute_sys_eigenproperty(A)
-        eigenvalue_observability_ind = C.shape[1]
-        for j in range(unique_eigvals.shape[1]):
-            eigenval = unique_eigvals[:,j]
+        for i in range(len(gm_list)):
+            if gm_list[i] != 1:
+                print(f'Warning: eigenvalue observability is not well-defined for eigvalue {unique_eigvals[i]} due to geometric multiplicity {gm_list[i]}. Proceed to calculation anyway.')
+        eigenvalue_observability_ind = C.shape[0] # start from p, keep decreasing
+        for j in range(unique_eigvals.shape[0]):
+            eigenval = unique_eigvals[j]
             ind_j = cls.compute_eigenvalue_obser_index_sensors(A,C,eigenval) # eigenvalue obser index for eigenvalue j
             eigenvalue_observability_ind = min(eigenvalue_observability_ind,ind_j)
 
@@ -506,7 +584,7 @@ class SecureStateReconstruct():
         Currently only working for scalar measurement
         '''
         eigenvalue_observ_ind = 0
-        for i in range(C.shape[1]):
+        for i in range(C.shape[0]):
             C_i = C[i,:]
             if cls.is_eigenvalue_observable_onesensor(A,C_i,eigenval_j,unique_eigvals=unique_eigvals):
                 eigenvalue_observ_ind = eigenvalue_observ_ind + 1
@@ -516,33 +594,37 @@ class SecureStateReconstruct():
     def is_eigenvalue_observable_onesensor(cls,A,C_i,eigenval_j,unique_eigvals = None):
         '''
         check if eigenvalue_j is observable with respect to sensor i
+        Note this is meaningful if and only if gm(A) = 1 for all eigenvalues
         '''
         eigenval_j = cls.find_closest_eigenvalue(A,eigenval_j)
         n = A.shape[0]
         I_n = np.eye(n)
-        mat = np.vstack([A -eigenval_j*I_n, C_i.reshape(-1,n)] )
+        mat = np.vstack([A -eigenval_j*I_n, C_i] )
+        # print(f'A: {A}, eigenval_j: {eigenval_j} ')
+        # print(f'PBH test matrix: \n {mat}')
         rank = np.linalg.matrix_rank(mat)
+        # print(f'rank is {rank}')
 
         if rank == n:
             return True
         else:
             return False
 
-    @classmethod
-    def find_closest_eigenvalue(cls,A,eigenval_to_test):
+    @staticmethod
+    def find_closest_eigenvalue(A,eigenval_to_test):
         '''
         return one eigenvalue of A that is closest to eigenval_to_test. 
         This step is mainly to reduce numerical trancation error
         '''
-        unique_eigvals, _, _, _ = cls.compute_sys_eigenproperty(A)
+        unique_eigvals = linalg.eigvals(A)
 
         # check if eigenval is in unique_eigvals
-        temp = linalg.norm(unique_eigvals - eigenval_to_test.reshape(-1,1),axis=1)
+        temp = abs(unique_eigvals - eigenval_to_test)
         if np.min(temp)<EPS:
             ind = np.argmin(temp)
             return unique_eigvals[ind] 
         else:
-            Warning('eigenval_to_test is far from any eigenvalues of A')
+            print('Warning:eigenval_to_test is far from any eigenvalues of A')
             return None
 
     @staticmethod
@@ -551,8 +633,9 @@ class SecureStateReconstruct():
         Calculates generalized eigenspace of A corresp. to eigval
         am -- algebraic multiplicity
         '''
+        # linalg.null_space is numerically sensitive. rcond - relative conditional number
         temp_matrix = linalg.fractional_matrix_power(A - eigval*np.eye(A.shape[0]), am)
-        generalized_eigenspace = linalg.null_space(temp_matrix)
+        generalized_eigenspace = linalg.null_space(temp_matrix,rcond = EPS)
         return generalized_eigenspace
         
     @staticmethod
@@ -564,6 +647,8 @@ class SecureStateReconstruct():
         V = (sp1,...,spj,...,spr). Based on [0, ..., spj, ...., 0] = Pj* [sp1, ..., spj, ...., spr] and 
         V is full column rank, we know
         ************  Pj = [0, ..., spj, ...., 0] (V^T V)^{-1} V^T   **************
+
+        j = 0,1,..., r-1
         '''
         full_space = np.hstack(subspace_list) #  = V = (sp1, sp2, ..., spr)
         rank_full_space = np.linalg.matrix_rank(full_space)
@@ -582,25 +667,53 @@ class SecureStateReconstruct():
 
         proj_mat = lhd @ linalg.inv(full_space.T @ full_space) @ full_space.T 
         return proj_mat
+    
+    @staticmethod
+    def solve_lstsq_from_subspace(A,b,subspace):
+        '''
+        Solve least square problem by searching solution from a subspace of R^n
+        Ax = b, x \in V= span(v1,v2,...,vp) => A V y = b, y\in R^p and AV should be full column rank
+
+        Default scipy.linalg.lstsq does not handle rank-deficient matrix well
+        '''
+        A_new = A@subspace
+        y, residuals, rank, _= linalg.lstsq(A_new,b)
+        y = y.reshape(-1,1)
+        residuals = linalg.norm(A_new@y - b)**2
+        if residuals>EPS:
+            print(f'Warning: residual from solve_lstsq_from_subspace is {residuals}')
+        return subspace@y, residuals, rank
 
 if __name__ == "__main__":
     # define system model and measurement model
     Ac = np.array([[0, 1, 0, 0],[0, -0.2, 0, 0],[0,0,0,1],[0,0,0,-0.2]])
     Bc = np.array([[0, 0],[1, 0],[0, 0],[0,1]])
     Cc = np.array([[1,0,0,0],[1,0,0,0],[0,1,0,0],[0,1,0,0],[0,0,1,0],[0,0,1,0],[0,0,0,1],[0,0,0,1]])
-    # Cc = np.vstack((Cc,Cc)) # if given enough sensor redundancy
     Dc = np.zeros((Cc.shape[0],Bc.shape[1]))
+
+    # randomize system to test 
+    # choose Ac to have real eigenvalues
+    Ac = np.random.normal(3,3,size=[4,4])
+    eig_vals = linalg.eigvals(Ac)
+    while(not all(np.isreal(eig_vals))):
+        Ac = np.random.normal(3,3,size=[4,4])
+        eig_vals = linalg.eigvals(Ac)
+    print(f'Ac eig_vals: {eig_vals}')
+
+    Bc = np.random.normal(3,3,size=[4,2])
+    Cc = np.random.normal(1,1,size=[8,4]) # if given enough sensor redundancy
+
     s = 3
 
     # generate discrete-time system
     dtsys_a, dtsys_b, dtsys_c, dtsys_d = SSProblem.convert_ct_to_dt(Ac,Bc,Cc,Dc,TS)
     # define input output data
-    init_state1 = np.array([[1.],[1.],[1.],[1.]])
-    init_state2 = np.array([[2.],[2.],[2.],[1.]])
+    init_state1 = np.array([[1.],[2.],[3.],[4.]])
+    init_state2 = np.array([[1.],[2.],[2.],[4.]])
     # u_seq = np.array([[1,1],[1,1],[1,1],[0,0]])
     # assume sensors 1,3,5 are under attack
-    sensor_initial_states = [init_state2,init_state1,init_state2,init_state1,
-                             init_state2,init_state1,init_state1,init_state1]
+    sensor_initial_states = [init_state1,init_state1,init_state1,init_state1,
+                             init_state1,init_state1,init_state1,init_state2]
     u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states,
                                                                             s = s,is_noisy = True, noise_level=0.001,u_seq = None)
 
@@ -632,7 +745,14 @@ if __name__ == "__main__":
     is_testing_subssr = True
     if is_testing_subssr:
         # sparse observability index
+        soi = SecureStateReconstruct.compute_sparse_observability(ss_problem.A,ss_problem.C)
         # eigenvalue observability index
+        eoi = SecureStateReconstruct.compute_eigenvalue_observability(ss_problem.A,ss_problem.C)
+        print(f'The problem have a sparse observability index {soi}, eigenvalue observability index: {eoi}, attacked sensor count: {s}')
+        # eigenspace related property
+        unique_eigvals, generalized_eigenspace_list, am_list, gm_list = SecureStateReconstruct.compute_sys_eigenproperty(ss_problem.A)
+        # print(f'Eigen properties. . \n generalized_eigenspace_list: \n {generalized_eigenspace_list} ')
+        print(f'unique_eigvals: {unique_eigvals.T}, algebraic multiplicities: {am_list}, geometric multiplicities: {gm_list}')
 
         # decompose ssr to sub_ssr problems
         subprob_a, subprob_c, subprob_y = ssr_solution.generate_subssr_data()
@@ -643,16 +763,39 @@ if __name__ == "__main__":
         # check for sensor compatibility and generate possible initial states
 
         # give cbf parameters H, q, gamma, solve for input feasible region
+        full_state = np.zeros((4,))
+        for j in range(subprob_a.shape[2]):
+            sub_a = subprob_a[:,:,j]
+            sub_c = subprob_c
+            sub_y_his = subprob_y[:,:,j]
+            subproblem = SSProblem(sub_a, dtsys_b, sub_c, dtsys_d,sub_y_his, attack_sensor_count=s,measurement_noise_level=noise_level)
+            sub_solution = SecureStateReconstruct(subproblem)
+            possible_states,corresp_sensors, _ = sub_solution.solve_initial_state(error_bound = 1, is_fullspace=False,
+                                                                                  subspaces = generalized_eigenspace_list[j])
+            if possible_states is not None:
+                for ind in range(corresp_sensors.shape[0]):
+                    sensors = corresp_sensors[ind,:]
+                    state = possible_states[:,ind]
+                    # print(f'Identified possible states:{state} for sensors {sensors}')
+                    # print(f'state for subspace {j} and sensors {sensors} is calculated as {state}')
+            print(f'\n state for subspace {j} is calculated as {state} \n')
+            projj = ssr_solution.construct_proj(generalized_eigenspace_list,j)
+            xj = projj@init_state1
+            print(f'x{j} is {xj.T}')
 
-        # for j in range(subprob_a.shape[2]):
-        #     sub_a = subprob_a[:,:,j]
-        #     sub_c = subprob_c
-        #     sub_y_his = subprob_y[:,:,j]
-        #     subproblem = SSProblem(sub_a, dtsys_b, sub_c, dtsys_d,sub_y_his, attack_sensor_count=s,measurement_noise_level=noise_level)
-        #     sub_solution = SecureStateReconstruct(subproblem)
-        #     possible_states,corresp_sensors, _ = sub_solution.solve_initial_state(error_bound = 1)
-            # if possible_states is not None:
-            #     for ind in range(corresp_sensors.shape[0]):
-            #         sensors = corresp_sensors[ind,:]
-            #         state = possible_states[:,ind]
-            #         print(f'Identified possible states:{state} for sensors {sensors}')
+            full_state = full_state + state
+        # should give 1,1,1,1
+        print(f'\n \n Full state is {full_state}')
+
+        # just to see what goes wrong
+
+        # A0 = proj0@dtsys_a
+        # Y0_list = []
+        # for i in range(dtsys_c.shape[0]):
+        #     obser_i = ct.obsv(dtsys_a,dtsys_c[i:i+1,:])
+        #     Y0_i = obser_i@x0
+        #     Y0_list.append(Y0_i)
+        # Y0 = np.hstack(Y0_list).T
+        # print(Y0)
+        # print(subprob_y[:,:,0])
+        # SecureStateReconstruct.construct_proj
