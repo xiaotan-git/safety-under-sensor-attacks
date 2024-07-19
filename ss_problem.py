@@ -2,7 +2,7 @@ from typing import List
 import itertools
 import numpy as np
 from scipy import linalg
-import mpmath as mpm
+# import mpmath as mpm
 import control as ct
 
 # sampling rate
@@ -102,9 +102,11 @@ class SSProblem():
         # xt is of dimension n \times no. of possible states
         n = dtsys_a.shape[0]
         m = dtsys_b.shape[1]
-        if state_array.shape[0] != n:
-            state_array = state_array.transpose()
         ut.reshape(m,1)
+        if state_array.ndim!=2:
+            raise KeyError('When propagating state, state_array should be of 2d array')
+        if state_array.shape[0] != n:
+            raise KeyError('When propagating state, state_array should be of dimension n times number of possible states')
         x_new = dtsys_a@state_array + (dtsys_b@ut).reshape(n,1) #  ().reshape(n,1) for broadcasting
         return x_new
     
@@ -112,7 +114,7 @@ class SSProblem():
     def update_state(cls,dtsys_a,dtsys_b,state_array,u_seq):
         '''
         This method updates an array of system states xt given an input sequence u_seq. 
-        x: (n,), (n,1), (1,n) array
+        x:  (n,k), must be a 2d-array
         u_seq: (t,m) array for multiple steps, (m,), (m,1), (1,m) array for one step update
         '''
         m = dtsys_b.shape[1]
@@ -127,6 +129,7 @@ class SSProblem():
                 for t in range(duration):
                     x_new = cls.update_state_one_step(dtsys_a, dtsys_b,x_old,u_seq[t,:])
                     x_old = x_new
+                    # print(f'x_new: {x_new}')
         return x_new
     
     @classmethod         
@@ -265,6 +268,8 @@ class SecureStateReconstruct():
     def solve_initial_state(self,error_bound = 1,is_fullspace=True, subspaces = None):
         '''
         The method solves a given SSR problem and yields possible initial states, currently in a brute-force approach. 
+
+        is_fullspace: flag whether x is from R^n or from some subspace of R^n
         '''
         possible_states_list = []
         corresp_sensors_list = []
@@ -316,11 +321,14 @@ class SecureStateReconstruct():
         # Solves for current states
         possible_states, corresp_sensors, corresp_sensors_list = self.solve_initial_state(error_bound)
         current_states_list = []
-        for ind in range(possible_states.shape[1]):
-            init_state = possible_states[:,ind]
-            curr_state = self.problem.update_state(self.problem.A, self.problem.B, init_state,self.problem.u_seq)
-            current_states_list.append(curr_state)
-        current_states = np.hstack(current_states_list)
+        if possible_states is not None: 
+            for ind in range(possible_states.shape[1]):
+                init_state = possible_states[:,ind:ind+1] # must be 2d and state.shape[0] must be n
+                curr_state = self.problem.update_state(self.problem.A, self.problem.B, init_state,self.problem.u_seq)
+                current_states_list.append(curr_state)
+            current_states = np.hstack(current_states_list)
+        else:
+            current_states = None
         return current_states, corresp_sensors, corresp_sensors_list
 
     def generate_subssr_data(self):
@@ -335,7 +343,7 @@ class SecureStateReconstruct():
         unique_eigvals, counts = np.unique(eigval_a,return_counts = True)
         # total number of subspaces V^j, j = 1,..., r
         r = len(unique_eigvals)
-        obser_full = self.vstack_comb(self.obser) # vertically, (O_1, O_2, ..., O_p)
+        obser_full = self.vstack_comb(self.obser) # (O_1, O_2, ..., O_p) stacked vertically
 
         generalized_eigenspace_list = [] # for a list of V^j
         observable_space_list = [] # for a list of O(V^j)
@@ -685,6 +693,7 @@ class SecureStateReconstruct():
         return subspace@y, residuals, rank
 
 if __name__ == "__main__":
+    np.random.seed(0)
     # define system model and measurement model
     Ac = np.array([[0, 1, 0, 0],[0, -0.2, 0, 0],[0,0,0,1],[0,0,0,-0.2]])
     Bc = np.array([[0, 0],[1, 0],[0, 0],[0,1]])
@@ -708,8 +717,8 @@ if __name__ == "__main__":
     # generate discrete-time system
     dtsys_a, dtsys_b, dtsys_c, dtsys_d = SSProblem.convert_ct_to_dt(Ac,Bc,Cc,Dc,TS)
     # define input output data
-    init_state1 = np.array([[1.],[2.],[3.],[4.]])
-    init_state2 = np.array([[1.],[2.],[2.],[4.]])
+    init_state1 = np.array([[1.],[2.],[3.],[3.]])
+    init_state2 = np.array([[1.],[2.],[3.],[5.]])
     # u_seq = np.array([[1,1],[1,1],[1,1],[0,0]])
     # assume sensors 1,3,5 are under attack
     sensor_initial_states = [init_state1,init_state1,init_state1,init_state1,
@@ -742,7 +751,7 @@ if __name__ == "__main__":
 
 # *************** below are algorithms under development **********************#
     # test decompostion method
-    is_testing_subssr = True
+    is_testing_subssr = False
     if is_testing_subssr:
         # sparse observability index
         soi = SecureStateReconstruct.compute_sparse_observability(ss_problem.A,ss_problem.C)
@@ -777,11 +786,12 @@ if __name__ == "__main__":
                     sensors = corresp_sensors[ind,:]
                     state = possible_states[:,ind]
                     # print(f'Identified possible states:{state} for sensors {sensors}')
-                    # print(f'state for subspace {j} and sensors {sensors} is calculated as {state}')
-            print(f'\n state for subspace {j} is calculated as {state} \n')
+                    print(f'calculated x{j} is {state}')
+            
             projj = ssr_solution.construct_proj(generalized_eigenspace_list,j)
             xj = projj@init_state1
-            print(f'x{j} is {xj.T}')
+            # print(f'calculated x{j} is {state}')
+            print(f'           x{j} is {xj.T}')
 
             full_state = full_state + state
         # should give 1,1,1,1
