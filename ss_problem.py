@@ -353,19 +353,34 @@ class SecureStateReconstruct():
             am = counts[j]
             generalized_eigspace = self.compute_generalized_eigenspace(eigval,am, self.problem.A)
             obser_subspace_vec_list = [] # here independent basis for the subspace O(V^j)
-            for k in range(generalized_eigspace.shape[1]):
-                obser_subspace_vec = obser_full@generalized_eigspace[:,k] #N*1 2d array
-                obser_subspace_vec = obser_subspace_vec.reshape(-1,1) 
-                # print(f'shape of obser_subspace_vec: {obser_subspace_vec.shape}')
-                obser_subspace_vec_list.append(obser_subspace_vec)
-            obser_subspace = np.hstack(obser_subspace_vec_list)
+            # for k in range(generalized_eigspace.shape[1]):
+            #     obser_subspace_vec = obser_full@generalized_eigspace[:,k] #N*1 2d array
+            #     obser_subspace_vec = obser_subspace_vec.reshape(-1,1) 
+            #     # print(f'shape of obser_subspace_vec: {obser_subspace_vec.shape}')
+            #     obser_subspace_vec_list.append(obser_subspace_vec)
+            # obser_subspace = np.hstack(obser_subspace_vec_list)
+            obser_subspace = obser_full@generalized_eigspace
             # print(f'shape of obser_subspace: {obser_subspace.shape}')
 
             generalized_eigenspace_list.append(generalized_eigspace)
             observable_space_list.append(obser_subspace)
+        
+        # testing. Observation projection tilde{P}_ij per sensor and per subspace
+        sensor_indexed_observation_subspaces = []
+        for i in range(self.problem.p):
+            observ_space_sensor_i_list = []
+            obser_i = self.obser[:,:,i]
+            for j in range(r):
+                eigval = unique_eigvals[j]
+                am = counts[j]
+                generalized_eigspace = self.compute_generalized_eigenspace(eigval,am, self.problem.A)
+                observ_space_ij =  obser_i@generalized_eigspace #N*dim(Vj) 2d array
+                observ_space_sensor_i_list.append(observ_space_ij)
+            sensor_indexed_observation_subspaces.append(observ_space_sensor_i_list)
 
         subprob_a_list = []
         subprob_y_list = []
+        subprob_y_new_list = []
         project_obs_list = []
         for j in range(r):
             # for the generalized eigenspace V^j
@@ -382,13 +397,35 @@ class SecureStateReconstruct():
             # check unvstack
             # proj_y_his_j = self.unvstack(proj_y_his_j_vec,self.problem.io_length)
             proj_y_his_j = np.reshape(proj_y_his_j_vec,(self.problem.io_length,self.problem.p),order='F')
-            subprob_y_list.append(proj_y_his_j)
+            
+            # testing. Observ projection per sensor and per subspace
+            y_ij_list = []
+            for i in range(self.problem.p):
+                observ_space_sensor_i_list = sensor_indexed_observation_subspaces[i]
+                print(f'observ_space_ij_list:{observ_space_sensor_i_list}')
+                proj_obs_ji = self.construct_proj(observ_space_sensor_i_list,j)
+                Yi = self.y_his[:,i:i+1]
+                y_ij = proj_obs_ji@Yi
+                y_ij_list.append(y_ij) # append over all i
+            proj_y_his_j_new = np.hstack(y_ij_list)
+            # proj_y_his_j_new = np.reshape(proj_y_his_j_vec_new,(self.problem.io_length,self.problem.p),order='F')
 
+            
+            print('============================================')
+            print(f'proj_y_his_j: {proj_y_his_j}')
+            print(f'proj_y_his_j_new:{proj_y_his_j_new}')
+
+            subprob_y_list.append(proj_y_his_j)
+            subprob_y_new_list.append(proj_y_his_j_new)
         # 3d narray with dimension (n,n,r)
         subprob_a = np.dstack(subprob_a_list)
         # 3d naaray with dimension (io_length,p,r)
         subprob_y = np.dstack(subprob_y_list)
+        subprob_y_new = np.dstack(subprob_y_new_list)
 
+        print('============================================')
+        print(f'subprob_y: {subprob_y[0,0,0]}')
+        print(f'subprob_y_new:{subprob_y_new[0,0,0]}')
         # this is true only if the eigenvalues are reals.
         # assert linalg.norm(subprob_a - subprob_a.real)<= EPS
         # assert linalg.norm(subprob_y - subprob_y.real)<= EPS
@@ -413,7 +450,8 @@ class SecureStateReconstruct():
         assert linalg.norm(ax - ax_prime)<= EPS
         # print(f'linalg.norm(oy - oy_prime) {linalg.norm(oy - oy_prime)}')
         assert linalg.norm(oy - oy_prime)<= EPS
-            
+        
+        print(f'shape of subprob_y: {subprob_y.shape}')
         return subprob_a, self.problem.C, subprob_y
 
     def solve_initial_state_subssr(self, subspace,error_bound = 1):
@@ -449,30 +487,23 @@ class SecureStateReconstruct():
 
         # voting on states_to_vote_list
         print(f'states_to_vote_list: {states_to_vote_list}')
+        # sorted_states = [[0,(0,2,3)],[1,(1,4)] ,... ] [state, corresponding sensors]
         sorted_states =  self.vote_on_states(states_to_vote_list)
         print(f'sorted_states, {sorted_states}')
         # populating possible_states and corresp_sensors
-        # for state in sorted_states:
-        #     if sorted_states[state]>self.problem.s:
-        #         possible_states_list.append(state)
+        for state_ind in sorted_states:
+            # voting criterion
+            if len(sorted_states[state_ind])>0:
+                possible_states_list.append(states_to_vote_list[state_ind])
+                corresp_sensors_list.append(sorted_states[state_ind])
+        print(f'possible_states_list: {possible_states_list}')
 
+        if len(possible_states_list) == 0:
+            print('No possible state found for sub-ssr problem. Consider relax the voting range bound')
+            return None, None
+        possible_states = np.hstack(possible_states_list)
 
-        if len(possible_states_list)>0:
-            # here we remove the states that yields 100x smallest residual
-            residual_min = min(residuals_list)
-            print(f'residual min is {residual_min}')
-            # comb_list = [i for i in range(len(residuals_list)) if residuals_list[i]<10*residual_min]
-            comb_list = [i for i in range(len(residuals_list)) ]
-            possible_states_list = [possible_states_list[index] for index in comb_list]
-            corresp_sensors_list = [corresp_sensors_list[index] for index in comb_list]
-            possible_states = np.hstack(possible_states_list)
-            corresp_sensors = np.array(corresp_sensors_list)
-        else:
-            possible_states = None
-            corresp_sensors = None
-            print('No possible state found. Consider relax the error bound')
-
-        return possible_states, corresp_sensors, corresp_sensors_list
+        return possible_states, corresp_sensors_list
     
 
     def vote_on_states(self,states_to_vote_list):
@@ -484,19 +515,20 @@ class SecureStateReconstruct():
             return linalg.norm(state1 - state2)<100*EPS
         counts = {}
         # e.g., counts = {0:3, 1:2} meaning the first state has 3 votes
-        counts[0] = 0 
+        counts[0] = [ ]
 
         for ind in range(len(states_to_vote_list)):
             state = states_to_vote_list[ind]
-            for state_ind in counts:
+            for state_ind in list(counts):
                 st = states_to_vote_list[state_ind]
                 if is_same_state(state,st):
-                    counts[state_ind] =  counts[state_ind] + 1
+                    # counts[state_ind] =  counts[state_ind] + 1
+                    counts[state_ind].append(ind)
                 else:
-                    counts[ind] = 1
+                    counts[ind] = [ind]
 
         # Sort elements by count in descending order
-        sorted_states = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+        sorted_states = dict(sorted(counts.items(), key=lambda x: len(x), reverse=True))
         return sorted_states
         
 
@@ -802,11 +834,11 @@ if __name__ == "__main__":
     dtsys_a, dtsys_b, dtsys_c, dtsys_d = SSProblem.convert_ct_to_dt(Ac,Bc,Cc,Dc,TS)
     # define input output data
     init_state1 = np.array([[1.],[2.],[3.],[5.]])
-    init_state2 = np.array([[1.],[2.],[3.],[3.]])
+    init_state2 = np.array([[1.],[2.],[3.],[5.]])
     # u_seq = np.array([[1,1],[1,1],[1,1],[0,0]])
     # assume sensors 1,3,5 are under attack
     sensor_initial_states = [init_state1,init_state1,init_state1,init_state1,
-                             init_state1,init_state1,init_state1,init_state2]
+                             init_state1,init_state2,init_state1,init_state2]
     u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states,
                                                                             s = s,is_noisy = True, noise_level=0.001,u_seq = None)
 
@@ -849,8 +881,8 @@ if __name__ == "__main__":
 
         # decompose ssr to sub_ssr problems
         subprob_a, subprob_c, subprob_y = ssr_solution.generate_subssr_data()
-        print(f'generalized eigenspace count: {subprob_a.shape[2]}')
-        # print(f'measurement for sensor i = 0 and subspace j = 3 {subprob_y[:,0,3]}')    
+        print(f'geometric multiplicity count: {gm_list}')
+        print(f'measurement for sensor i = 0 and subspace j = 3 {subprob_y[:,0,3]}')    
         # print(f'measurement for sensor i = 7 and subspace j = 3 {subprob_y[:,7,3]}')   
 
         # solve sub_ssr problem, return possible states and corresponding attacked sensors
@@ -873,10 +905,11 @@ if __name__ == "__main__":
             subproblem = SSProblem(sub_a, dtsys_b, sub_c, dtsys_d,sub_y_his, 
                                    attack_sensor_count=s,measurement_noise_level=noise_level,is_sub_ssr=True)
             sub_solution = SecureStateReconstruct(subproblem)
-            sub_solution.solve_initial_state_subssr(error_bound = 1,subspace = generalized_eigenspace_list[j])
-            # full_state = full_state + state
+            states, corresp_sensors_list = sub_solution.solve_initial_state_subssr(error_bound = 1,subspace = generalized_eigenspace_list[j])
+            print(f'states:{states}')
+            full_state = full_state + states[:,0]
         # should give 1,1,1,1
-        # print(f'\n \n Full state is {full_state}')
+        print(f'\n \n Full state is {full_state}')
 
         # just to see what goes wrong
 
