@@ -304,7 +304,7 @@ class SecureStateReconstruct():
         if len(possible_states_list)>0:
             # here we remove the states that yields 100x smallest residual
             residual_min = min(residuals_list)
-            print(f'residual min is {residual_min}')
+            # print(f'residual min is {residual_min}')
             # comb_list = [i for i in range(len(residuals_list)) if residuals_list[i]<10*residual_min]
             comb_list = [i for i in range(len(residuals_list)) ]
             possible_states_list = [possible_states_list[index] for index in comb_list]
@@ -391,7 +391,7 @@ class SecureStateReconstruct():
             # construct subsystem data A_j, C_j, Y_j for subspace V^j
             proj_a_j = proj_gs_j@self.problem.A # 2d array
             y_his_vec = self.vstack_comb(self.y_his) # recall y_his is (io_length, p)
-            print(f'shape of proj_obs_j: {proj_obs_j.shape}, shape of y_his_vec: {y_his_vec.shape}')
+            # print(f'shape of proj_obs_j: {proj_obs_j.shape}, shape of y_his_vec: {y_his_vec.shape}')
             proj_y_his_j_vec =  proj_obs_j@y_his_vec # 2d column array, [y1(0), y1(1), ...,y1(io_length-1), y2(0), ....]
             subprob_a_list.append(proj_a_j)
             # check unvstack
@@ -402,16 +402,17 @@ class SecureStateReconstruct():
             y_ij_list = []
             for i in range(self.problem.p):
                 observ_space_sensor_i_list = sensor_indexed_observation_subspaces[i]
-                print(f'observ_space_ij_list:{observ_space_sensor_i_list}')
+                # print(f'observ_space_ij_list:{observ_space_sensor_i_list}')
                 proj_obs_ji = self.construct_proj(observ_space_sensor_i_list,j)
                 Yi = self.y_his[:,i:i+1]
                 y_ij = proj_obs_ji@Yi
                 y_ij_list.append(y_ij) # append over all i
             proj_y_his_j_new = np.hstack(y_ij_list)
             
-            print('============================================')
-            print(f'proj_y_his_j: {proj_y_his_j}')
-            print(f'proj_y_his_j_new:{proj_y_his_j_new}')
+            # print('================Still some strange things happening==================')
+            # print(f'proj_y_his_j: {proj_y_his_j}')
+            # print(f'proj_y_his_j_new:{proj_y_his_j_new}')
+            # print(f'difference:{proj_y_his_j - proj_y_his_j_new}')
 
             subprob_y_list.append(proj_y_his_j)
             subprob_y_new_list.append(proj_y_his_j_new)
@@ -419,10 +420,11 @@ class SecureStateReconstruct():
         subprob_a = np.dstack(subprob_a_list)
         # 3d naaray with dimension (io_length,p,r)
         # subprob_y = np.dstack(subprob_y_list)
+        #--------------Here we choose projection per sensor-----------#
         subprob_y= np.dstack(subprob_y_new_list)
 
-        print('============================================')
-        print(f'subprob_y: {subprob_y[0,0,0]}')
+        # print('============================================')
+        # print(f'subprob_y: {subprob_y[0,0,0]}')
         # print(f'subprob_y_new:{subprob_y_new[0,0,0]}')
         # this is true only if the eigenvalues are reals.
         # assert linalg.norm(subprob_a - subprob_a.real)<= EPS
@@ -446,10 +448,10 @@ class SecureStateReconstruct():
             oy_j = project_obs_list[j]@oy
             oy_prime = oy_prime + oy_j
         assert linalg.norm(ax - ax_prime)<= EPS
-        print(f'linalg.norm(oy - oy_prime) {linalg.norm(oy - oy_prime)}')
+        # print(f'linalg.norm(oy - oy_prime) {linalg.norm(oy - oy_prime)}')
         # assert linalg.norm(oy - oy_prime)<= EPS
         
-        print(f'shape of subprob_y: {subprob_y.shape}')
+        # print(f'shape of subprob_y: {subprob_y.shape}')
         return subprob_a, self.problem.C, subprob_y
 
     def solve_initial_state_subssr(self, subspace,error_bound = 1):
@@ -461,6 +463,7 @@ class SecureStateReconstruct():
         '''
         possible_states_list = []
         corresp_sensors_list = []
+        attacked_sensors_list = []
         residuals_list = []
 
         states_to_vote_list = []
@@ -472,6 +475,8 @@ class SecureStateReconstruct():
             # recall y_his is in the shape of (io_length, p)
             measure_vec =self.y_his[:,i:i+1]
 
+            # solving the equality Oij xj = Yij. 
+            # j does not show explicitly because this is a subssr problem instance
             state, residuals, rank= self.solve_lstsq_from_subspace(obser_matrix,measure_vec,subspace)
 
             # if len(residuals)<1:
@@ -484,26 +489,36 @@ class SecureStateReconstruct():
                 residuals_list.append(residuals)
 
         # voting on states_to_vote_list
-        print(f'states_to_vote_list: {states_to_vote_list}')
+        # print(f'states_to_vote_list: {states_to_vote_list}')
         # sorted_states = [[0,(0,2,3)],[1,(1,4)] ,... ] [state, corresponding sensors]
         sorted_states =  self.vote_on_states(states_to_vote_list)
-        print(f'sorted_states, {sorted_states}')
+        # print(f'sorted_states, {sorted_states}')
         # populating possible_states and corresp_sensors
         for state_ind in sorted_states:
-            # voting criterion
-            if len(sorted_states[state_ind])>s:
+            # voting criterion \geq p - s
+            if len(sorted_states[state_ind])>= self.problem.p - self.problem.s:
                 states_list = [states_to_vote_list[i] for i in sorted_states[state_ind]]
+                # averaging out the "same" states
                 average_state = np.average(np.hstack(states_list),axis=1).reshape(-1,1)
                 possible_states_list.append(average_state)
                 corresp_sensors_list.append(sorted_states[state_ind])
-        print(f'possible_states_list: {possible_states_list}')
+        # print(f'possible_states_list: {possible_states_list}')
 
         if len(possible_states_list) == 0:
             print('No possible state found for sub-ssr problem. Consider relax the voting range bound')
             return None, None
         possible_states = np.hstack(possible_states_list)
 
-        return possible_states, corresp_sensors_list
+        for state in possible_states_list:
+            attacked_sensors = []
+            for i in range(self.problem.p):
+                Oi = self.obser[:,:,i]
+                yij = self.y_his[:,i:i+1]
+                if linalg.norm(yij - Oi@(state.reshape(-1,1)))>1e-3:
+                    attacked_sensors.append(i)
+            attacked_sensors_list.append(attacked_sensors)
+
+        return possible_states, attacked_sensors_list
     
 
     def vote_on_states(self,states_to_vote_list,error_bound=1e-3):
@@ -532,7 +547,30 @@ class SecureStateReconstruct():
         # Sort elements by count in descending order
         sorted_states = dict(sorted(counts.items(), key=lambda x: len(x), reverse=True))
         return sorted_states
+    
+    def compose_subspace_states(self,subspace_states_sensors_list):
+        possible_states = []
+        corresp_sensors = []
+        combinations = list(itertools.product(*subspace_states_sensors_list))
+        for comb in combinations:
+            total_state = np.zeros(shape = comb[0][0].shape)
+            total_attacked_sensors = []
+            for item in comb:
+                total_state = total_state + item[0]
+                total_attacked_sensors.extend(item[1])
+            total_unique_attacked_sensors = list(set(total_attacked_sensors))
+            if len(total_unique_attacked_sensors)<=self.problem.s:
+                possible_states.append(total_state)
+                corresp_sensor = [sensor for sensor in range(self.problem.p) if sensor not in total_unique_attacked_sensors]
+                corresp_sensors.append(corresp_sensor)
         
+        if not possible_states:
+            return None, None
+        # print('-----------------------------------')
+        # print(f'possible_states: {possible_states}')
+        # print(f'corresp_sensors:{corresp_sensors}')
+        return possible_states,corresp_sensors
+
 
     @classmethod
     def vstack_comb(cls,array_to_stack:np.ndarray,comb:list = None,axis:int = None):
@@ -835,7 +873,7 @@ if __name__ == "__main__":
     # Bc = np.random.normal(3,3,size=[4,2])
     # Cc = np.random.normal(1,1,size=[8,4]) # if given enough sensor redundancy
 
-    s = 2
+    s = 4
 
     # generate discrete-time system
     dtsys_a, dtsys_b, dtsys_c, dtsys_d = SSProblem.convert_ct_to_dt(Ac,Bc,Cc,Dc,TS)
@@ -845,9 +883,9 @@ if __name__ == "__main__":
     # u_seq = np.array([[1,1],[1,1],[1,1],[0,0]])
     # assume sensors 1,3,5 are under attack
     sensor_initial_states = [init_state1,init_state1,init_state1,init_state1,
-                             init_state1,init_state2,init_state1,init_state2]
+                             init_state2,init_state2,init_state2,init_state2]
     u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states,
-                                                                            s = s,is_noisy = True, noise_level=1e-8,u_seq = None)
+                                                                            s = s,is_noisy = False, noise_level=1e-8,u_seq = None)
 
     # construct a problem instance
     ss_problem = SSProblem(dtsys_a, dtsys_b, dtsys_c, dtsys_d, tilde_y_his, 
@@ -888,8 +926,8 @@ if __name__ == "__main__":
 
         # decompose ssr to sub_ssr problems
         subprob_a, subprob_c, subprob_y = ssr_solution.generate_subssr_data()
-        print(f'geometric multiplicity count: {gm_list}')
-        print(f'measurement for first sensor i  and last subspace j {subprob_y[:,0,-1]}')    
+        # print(f'geometric multiplicity count: {gm_list}')
+        # print(f'measurement for first sensor i  and last subspace j {subprob_y[:,0,-1]}')    
         # print(f'measurement for sensor i = 7 and subspace {subprob_y[:,7,3]}')   
 
         # solve sub_ssr problem, return possible states and corresponding attacked sensors
@@ -897,7 +935,7 @@ if __name__ == "__main__":
         # check for sensor compatibility and generate possible initial states
 
         # give cbf parameters H, q, gamma, solve for input feasible region
-        full_state = np.zeros((shape_Ac[0],))
+        subspace_states_attacked_sensors_list = []
         for j in range(subprob_a.shape[2]):
             sub_a = subprob_a[:,:,j]
             sub_c = subprob_c
@@ -912,21 +950,18 @@ if __name__ == "__main__":
             subproblem = SSProblem(sub_a, dtsys_b, sub_c, dtsys_d,sub_y_his, 
                                    attack_sensor_count=s,is_sub_ssr=True)
             sub_solution = SecureStateReconstruct(subproblem)
-            states, corresp_sensors_list = sub_solution.solve_initial_state_subssr(error_bound = 1,subspace = generalized_eigenspace_list[j])
-            print(f'states:{states}')
-            full_state = full_state + states[:,0]
-        # should give 1,1,1,1
-        print(f'\n \n Estimated state - true state is {full_state.reshape(-1,1)-init_state1}')
-
-        # just to see what goes wrong
-
-        # A0 = proj0@dtsys_a
-        # Y0_list = []
-        # for i in range(dtsys_c.shape[0]):
-        #     obser_i = ct.obsv(dtsys_a,dtsys_c[i:i+1,:])
-        #     Y0_i = obser_i@x0
-        #     Y0_list.append(Y0_i)
-        # Y0 = np.hstack(Y0_list).T
-        # print(Y0)
-        # print(subprob_y[:,:,0])
-        # SecureStateReconstruct.construct_proj
+            states, attacked_sensors_list = sub_solution.solve_initial_state_subssr(error_bound = 1,subspace = generalized_eigenspace_list[j])
+            # print(f'states:{states}')
+            # print(f'attacked_sensors_list: {attacked_sensors_list}')
+            states = states.transpose() # to zip
+            subspace_states_attacked_sensors = list(zip(states,attacked_sensors_list))
+            subspace_states_attacked_sensors_list.append(subspace_states_attacked_sensors) # [..., [xj,[0,1,2]], ...]
+        
+        full_state_list,corresp_sensors = sub_solution.compose_subspace_states(subspace_states_attacked_sensors_list)
+        if full_state_list is not None:
+            state_ind = 0
+            for full_state in full_state_list:
+                print('--------------------------------------------------------------------')
+                print(f'Estimated state {state_ind} - initial state 1 is \n {full_state.reshape(-1,1)-init_state1}')
+                print(f'Estimated state {state_ind} - initial state 2 is \n {full_state.reshape(-1,1)-init_state2}')
+                state_ind = state_ind +1
