@@ -169,6 +169,11 @@ class SSProblem():
                 Ci = dtsys_c[i:i+1,:] # 2D array
                 Di = dtsys_d[i:i+1,:] # 2D array
                 yi_t = Ci@corres_state + Di@(u_seq[t,:].reshape(m,1))
+                if not yi_t.size == 1:
+                    print(f'Ci: {Ci}')
+                    print(f'Di: {Di}')
+                    print(f'corres_state: {corres_state}')
+                    print(f'yi_t:{yi_t}')
                 tilde_y_his[t,i] = yi_t # entry-wise assignment
             # update state to next time instant
             xt_old = xt_new
@@ -176,6 +181,8 @@ class SSProblem():
 
         if is_noisy:
             tilde_y_his = tilde_y_his + np.random.normal(0,float(noise_level),(io_length,p))
+        else:
+            noise_level = 0.0
 
 
         return u_seq, tilde_y_his, noise_level
@@ -306,9 +313,8 @@ class SecureStateReconstruct():
             residual_min = min(residuals_list)
             # print(f'residual min is {residual_min}')
             # comb_list = [i for i in range(len(residuals_list)) if residuals_list[i]<10*residual_min]
-            comb_list = [i for i in range(len(residuals_list)) ]
-            possible_states_list = [possible_states_list[index] for index in comb_list]
-            corresp_sensors_list = [corresp_sensors_list[index] for index in comb_list]
+            possible_states_list = [possible_states_list[index] for index in range(len(residuals_list)) ]
+            corresp_sensors_list = [corresp_sensors_list[index] for index in range(len(residuals_list)) ]
             possible_states = np.hstack(possible_states_list)
             corresp_sensors = np.array(corresp_sensors_list)
         else:
@@ -456,8 +462,9 @@ class SecureStateReconstruct():
 
     def solve_initial_state_subssr(self, subspace,error_bound = 1):
         '''
-        It solves initial states for sub-SSR problem. Note that for sub-SSR problem, 
-        the brute-force apporach will not work. One have to use a voting to determine the initial state.
+        It solves initial states for sub-SSR problem. One have to use a voting to determine the initial state.
+
+        Consider both brute-force approach and voting approach for subssr problem
 
         For now we only consider gm = 1 case and individual sensors w.r.t. which the system is measurable in that subspace
         '''
@@ -478,10 +485,6 @@ class SecureStateReconstruct():
             # solving the equality Oij xj = Yij. 
             # j does not show explicitly because this is a subssr problem instance
             state, residuals, rank= self.solve_lstsq_from_subspace(obser_matrix,measure_vec,subspace)
-
-            # if len(residuals)<1:
-            #     # print(f'combinations: {comb}')
-            #     residuals = linalg.norm(obser_matrix@state - measure_vec,ord=2)**2
 
             if residuals <error_bound:
                 states_to_vote_list.append(state)
@@ -506,6 +509,8 @@ class SecureStateReconstruct():
 
         if len(possible_states_list) == 0:
             print('No possible state found for sub-ssr problem. Consider relax the voting range bound')
+            print(f'sorted_states: {sorted_states}')
+            print(f'states_to_vote_list:{states_to_vote_list}')
             return None, None
         possible_states = np.hstack(possible_states_list)
 
@@ -553,7 +558,10 @@ class SecureStateReconstruct():
         corresp_sensors = []
         combinations = list(itertools.product(*subspace_states_sensors_list))
         for comb in combinations:
-            total_state = np.zeros(shape = comb[0][0].shape)
+            try:
+                total_state = np.zeros(shape = comb[0][0].shape)
+            except:
+                print(f'comb[0]: {comb[0]}')
             total_attacked_sensors = []
             for item in comb:
                 total_state = total_state + item[0]
@@ -718,7 +726,8 @@ class SecureStateReconstruct():
             # print(f'C_comb: {C_comb}')
             obser = ct.obsv(A,C_comb)
             # print(f's: {s}, np.linalg.matrix_rank(obser): {np.linalg.matrix_rank(obser)}')
-            if np.linalg.matrix_rank(obser) != A.shape[0]:
+            # this causes a numerical issue
+            if np.linalg.matrix_rank(obser,tol=EPS) != A.shape[0]:
                 return False
 
         return True
@@ -833,7 +842,7 @@ class SecureStateReconstruct():
         return proj_mat
     
     @staticmethod
-    def solve_lstsq_from_subspace(A,b,subspace):
+    def solve_lstsq_from_subspace(A,b,subspace,error_bound = 1e-4):
         '''
         Solve least square problem by searching solution from a subspace of R^n
         Ax = b, x \in V= span(v1,v2,...,vp) => A V y = b, y\in R^p and AV should be full column rank
@@ -843,8 +852,8 @@ class SecureStateReconstruct():
         A_new = A@subspace
         y, residuals, rank, _= linalg.lstsq(A_new,b)
         y = y.reshape(-1,1)
-        residuals = linalg.norm(A_new@y - b)**2
-        if residuals>EPS:
+        # residuals = linalg.norm(A_new@y - b)**2
+        if residuals>error_bound:
             print(f'Warning: residual from solve_lstsq_from_subspace is {residuals}')
         return subspace@y, residuals, rank
 
@@ -895,7 +904,7 @@ if __name__ == "__main__":
     # print('tilde_y_his:',ss_problem.tilde_y_his)
 
     # define and test a solution instance
-    is_testing_ssr = False
+    is_testing_ssr = True
     # comb1 = [[0,2,4,6,7],[0,1,4,6,7]]
     # ssr_solution = SecureStateReconstruct(ss_problem,possible_comb=comb1)
     ssr_solution = SecureStateReconstruct(ss_problem)
@@ -908,8 +917,10 @@ if __name__ == "__main__":
             for ind in range(corresp_sensors.shape[0]):
                 sensors = corresp_sensors[ind,:]
                 state = possible_states[:,ind]
+                print('--------------------------------------------------------------------')
                 print(f'Identified possible states:{state} for sensors {sensors}')
-
+                print(f'Estimated state - initial state 1 is \n {state.reshape(-1,1)-init_state1}')
+                print(f'Estimated state - initial state 2 is \n {state.reshape(-1,1)-init_state2}')
 # *************** below are algorithms under development **********************#
     # test decompostion method
     is_testing_subssr = True
@@ -941,18 +952,22 @@ if __name__ == "__main__":
             sub_c = subprob_c
             sub_y_his = subprob_y[:,:,j]
             # the following approach to solve for sub-SSR problem is not correct. 
-            # Because all the measurements are contaminated by the attacked signal
             # subproblem = SSProblem(sub_a, dtsys_b, sub_c, dtsys_d,sub_y_his, attack_sensor_count=s,measurement_noise_level=noise_level)
             # sub_solution = SecureStateReconstruct(subproblem)
-            # possible_states,corresp_sensors, _ = sub_solution.solve_initial_state(error_bound = 1, is_fullspace=False,
-            #                                                                       subspaces = generalized_eigenspace_list[j])
+
 
             subproblem = SSProblem(sub_a, dtsys_b, sub_c, dtsys_d,sub_y_his, 
                                    attack_sensor_count=s,is_sub_ssr=True)
             sub_solution = SecureStateReconstruct(subproblem)
+            # solution 1: brute-force for subproblems
+            possible_states,corresp_sensors, _ = sub_solution.solve_initial_state(error_bound = 1, is_fullspace=False,
+                                                                                subspaces = generalized_eigenspace_list[j])
+            # solution 2: by voting
             states, attacked_sensors_list = sub_solution.solve_initial_state_subssr(error_bound = 1,subspace = generalized_eigenspace_list[j])
             # print(f'states:{states}')
             # print(f'attacked_sensors_list: {attacked_sensors_list}')
+            if states is None:
+                raise KeyError(f'state in subspace {j} is None. Check')
             states = states.transpose() # to zip
             subspace_states_attacked_sensors = list(zip(states,attacked_sensors_list))
             subspace_states_attacked_sensors_list.append(subspace_states_attacked_sensors) # [..., [xj,[0,1,2]], ...]
