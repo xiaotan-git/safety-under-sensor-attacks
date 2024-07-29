@@ -276,11 +276,9 @@ class SecureStateReconstruct():
     def solve_initial_state(self,error_bound = 1):
         '''
         The method solves a given SSR problem and yields possible initial states, currently in a brute-force approach. 
-
-        is_fullspace: flag whether x is from R^n or from some subspace of R^n
         '''
         if self.problem.is_sub_ssr:
-            raise Exception('Sub-SSR problem is not allowed to use solve_initial_state method')
+            raise Exception('It is a sub-ssr problem. Use solve_initial_state_subssr method instead')
         
         possible_states_list = []
         corresp_sensors_list = []
@@ -296,9 +294,11 @@ class SecureStateReconstruct():
             # print(f'Observation matrix shape {obser_matrix.shape}, measure_vec shape {measure_vec.shape}')
             state, residuals, rank, _ = linalg.lstsq(obser_matrix,measure_vec)
 
-            # if len(residuals)<1:
-            #     # print(f'combinations: {comb}')
-            #     residuals = linalg.norm(obser_matrix@state - measure_vec,ord=2)**2
+            if len(residuals)<1:
+                # print(f'combinations: {comb}')
+                residuals = linalg.norm(obser_matrix@state - measure_vec,ord=2)**2
+            else:
+                residuals = residuals.item()
 
             if residuals <error_bound:
                 possible_states_list.append(state)
@@ -322,11 +322,11 @@ class SecureStateReconstruct():
             corresp_sensors = None
             print('No possible state found. Consider relax the error bound')
 
-        return possible_states, corresp_sensors, corresp_sensors_list
+        return possible_states, corresp_sensors, residuals_list
     
     def solve(self,error_bound = 1):
         # Solves for current states
-        possible_states, corresp_sensors, corresp_sensors_list = self.solve_initial_state(error_bound)
+        possible_states, corresp_sensors, residuals_list = self.solve_initial_state(error_bound)
         current_states_list = []
         if possible_states is not None: 
             for ind in range(possible_states.shape[1]):
@@ -336,7 +336,7 @@ class SecureStateReconstruct():
             current_states = np.hstack(current_states_list)
         else:
             current_states = None
-        return current_states, corresp_sensors, corresp_sensors_list
+        return current_states, corresp_sensors, residuals_list
 
     def generate_subssr_data(self):
         '''
@@ -409,7 +409,7 @@ class SecureStateReconstruct():
             for i in range(self.problem.p):
                 observ_space_sensor_i_list = sensor_indexed_observation_subspaces[i]
                 # print(f'observ_space_ij_list:{observ_space_sensor_i_list}')
-                proj_obs_ji = self.construct_proj(observ_space_sensor_i_list,j)
+                proj_obs_ji = self.construct_proj(observ_space_sensor_i_list,j)  # This is tilde_P_ij: Oi(R^n) -> Oi(V^j)
                 Yi = self.y_his[:,i:i+1]
                 y_ij = proj_obs_ji@Yi
                 y_ij_list.append(y_ij) # append over all i
@@ -498,7 +498,7 @@ class SecureStateReconstruct():
         # print(f'sorted_states, {sorted_states}')
         # populating possible_states and corresp_sensors
         for state_ind in sorted_states:
-            # voting criterion \geq p - s
+            # voting criterion: votes \ge p' - s, where p' is the eigenvalue observability + 1
             if len(sorted_states[state_ind])>= self.problem.p - self.problem.s:
                 states_list = [states_to_vote_list[i] for i in sorted_states[state_ind]]
                 # averaging out the "same" states
@@ -514,12 +514,17 @@ class SecureStateReconstruct():
             return None, None
         possible_states = np.hstack(possible_states_list)
 
-        for state in possible_states_list:
+        for k in range(len(possible_states_list)):
+            state = possible_states_list[k]
+            corresp_sensors = corresp_sensors_list[k]
+            # by introducing attacked_sensors_candi list, we avoid check for all sensors
+            attacked_sensors_candi = [i for i in range(self.problem.p) if i not in corresp_sensors]
             attacked_sensors = []
-            for i in range(self.problem.p):
+            for i in attacked_sensors_candi:
                 Oi = self.obser[:,:,i]
                 yij = self.y_his[:,i:i+1]
-                if linalg.norm(yij - Oi@(state.reshape(-1,1)))>1e-3:
+                # this gives me a hard time
+                if linalg.norm(yij - Oi@(state.reshape(-1,1)))>1e-1:
                     attacked_sensors.append(i)
             attacked_sensors_list.append(attacked_sensors)
 
@@ -672,7 +677,7 @@ class SecureStateReconstruct():
 
         return unique_eigvals, (generalized) eigenspace, am_list, gm_list
         '''
-        eigval_a = linalg.eigvals(A)
+        eigval_a, eigenspace_a = linalg.eig(A,right=True)
         unique_eigvals, counts = np.unique(eigval_a,return_counts = True)
         # total number of subspaces V^j, j = 1,..., r
         r = len(unique_eigvals)
@@ -686,14 +691,23 @@ class SecureStateReconstruct():
             am = counts[j]
             generalized_eigspace = cls.compute_generalized_eigenspace(eigval,am, A)
 
-            I_n = np.eye(A.shape[0])
-            eigenspace = linalg.null_space(A - eigval*I_n,rcond=EPS)
-            gm = eigenspace.shape[1]
+            if am == 1:
+                # since am is always larger than gm
+                gm = 1
+                ind = sum(counts[0:j])
+                eigenspace = eigenspace_a[:,ind]
+            else:
+                I_n = np.eye(A.shape[0])
+                # this causes numerical issues
+                eigenspace = linalg.null_space(A - eigval*I_n,rcond=EPS)
+                gm = eigenspace.shape[1]
             
             generalized_eigenspace_list.append(generalized_eigspace)
             eigenspace_list.append(eigenspace)
             am_list.append(am)
             gm_list.append(gm)
+        assert sum(am_list) == A.shape[0]
+        assert sum(gm_list) <= A.shape[0]
         if output_gen_eigenspace:
             return unique_eigvals, generalized_eigenspace_list, am_list, gm_list
         else:
@@ -806,9 +820,21 @@ class SecureStateReconstruct():
         Calculates generalized eigenspace of A corresp. to eigval
         am -- algebraic multiplicity
         '''
-        # linalg.null_space is numerically sensitive. rcond - relative conditional number
-        temp_matrix = linalg.fractional_matrix_power(A - eigval*np.eye(A.shape[0]), am)
-        generalized_eigenspace = linalg.null_space(temp_matrix,rcond = EPS)
+        if am == 1:
+            eigenvalues, eigenvectors = np.linalg.eig(A)
+            # Find the index of the eigenvalue closest to the given one
+            idx = np.argmin(np.abs(eigenvalues - eigval))
+            # Return the corresponding eigenvector
+            generalized_eigenspace = eigenvectors[:, idx:idx+1]
+        else:
+            eigval = SecureStateReconstruct.find_closest_eigenvalue(A,eigval)
+            # linalg.null_space is numerically sensitive. rcond - relative conditional number
+            temp_matrix = linalg.fractional_matrix_power(A - eigval*np.eye(A.shape[0]), am)
+            generalized_eigenspace = linalg.null_space(temp_matrix,rcond = EPS)
+            if generalized_eigenspace.shape[1] > am:
+                generalized_eigenspace = linalg.null_space(temp_matrix,rcond = 1e-3)
+        
+        assert generalized_eigenspace.shape[1] == am, f'generalized_eigenspace.shape:{generalized_eigenspace.shape}, am: {am}'
         return generalized_eigenspace
         
     @staticmethod
@@ -825,7 +851,8 @@ class SecureStateReconstruct():
         '''
         full_space = np.hstack(subspace_list) #  = V = (sp1, sp2, ..., spr)
         rank_full_space = np.linalg.matrix_rank(full_space)
-        assert rank_full_space == full_space.shape[1]
+        
+        assert rank_full_space == full_space.shape[1], f"rank_full_space:{rank_full_space}, full_space.shape: {full_space.shape}"
         
         # to construct [0, ..., spj, ...., 0] 
         tem_list = []
@@ -960,8 +987,7 @@ if __name__ == "__main__":
                                    attack_sensor_count=s,is_sub_ssr=True)
             sub_solution = SecureStateReconstruct(subproblem)
             # solution 1: brute-force for subproblems
-            possible_states,corresp_sensors, _ = sub_solution.solve_initial_state(error_bound = 1, is_fullspace=False,
-                                                                                subspaces = generalized_eigenspace_list[j])
+            # possible_states,corresp_sensors, _ = sub_solution.solve_initial_state(error_bound = 1)
             # solution 2: by voting
             states, attacked_sensors_list = sub_solution.solve_initial_state_subssr(error_bound = 1,subspace = generalized_eigenspace_list[j])
             # print(f'states:{states}')
