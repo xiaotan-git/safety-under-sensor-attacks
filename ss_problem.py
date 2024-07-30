@@ -350,97 +350,114 @@ class SecureStateReconstruct():
         unique_eigvals, counts = np.unique(eigval_a,return_counts = True)
         # total number of subspaces V^j, j = 1,..., r
         r = len(unique_eigvals)
-        obser_full = self.vstack_comb(self.obser) # (O_1, O_2, ..., O_p) stacked vertically
 
-        generalized_eigenspace_list = [] # for a list of V^j
-        observable_space_list = [] # for a list of O(V^j)
-        for j in range(r):
-            eigval =  unique_eigvals[j]
-            am = counts[j]
-            generalized_eigspace = self.compute_generalized_eigenspace(eigval,am, self.problem.A)
-            obser_subspace_vec_list = [] # here independent basis for the subspace O(V^j)
-            # for k in range(generalized_eigspace.shape[1]):
-            #     obser_subspace_vec = obser_full@generalized_eigspace[:,k] #N*1 2d array
-            #     obser_subspace_vec = obser_subspace_vec.reshape(-1,1) 
-            #     # print(f'shape of obser_subspace_vec: {obser_subspace_vec.shape}')
-            #     obser_subspace_vec_list.append(obser_subspace_vec)
-            # obser_subspace = np.hstack(obser_subspace_vec_list)
-            obser_subspace = obser_full@generalized_eigspace
-            # print(f'shape of obser_subspace: {obser_subspace.shape}')
+        generalized_eigenspace_list = self._compute_generalized_eigenspace_list(unique_eigvals, counts) # for a list of V^j
 
-            generalized_eigenspace_list.append(generalized_eigspace)
-            observable_space_list.append(obser_subspace)
-        
-        # testing. Observation projection tilde{P}_ij per sensor and per subspace
-        sensor_indexed_observation_subspaces = []
-        for i in range(self.problem.p):
-            observ_space_sensor_i_list = []
-            obser_i = self.obser[:,:,i]
-            for j in range(r):
-                eigval = unique_eigvals[j]
-                am = counts[j]
-                generalized_eigspace = self.compute_generalized_eigenspace(eigval,am, self.problem.A)
-                observ_space_ij =  obser_i@generalized_eigspace #io-length*dim(Vj) 2d array
-                observ_space_sensor_i_list.append(observ_space_ij)
-            sensor_indexed_observation_subspaces.append(observ_space_sensor_i_list)
+        # ******************************Not used*********************************************
+        # Here we compute for a list of O(V^j) and the projection tilde_P_j: O(R^n) -> O(V^j). 
+        # This part of the code turns out to be not useful
+        # obser_full = self.vstack_comb(self.obser) # (O_1, O_2, ..., O_p) stacked vertically
+
+        # observable_space_list = [] 
+        # for j in range(r):
+            # obser_subspace = obser_full@generalized_eigspace
+            # observable_space_list.append(obser_subspace)
+        # subprob_y_list = []
+        # for j in range(r):
+            # proj_obs_j = self.construct_proj(observable_space_list,j) # This is 
+            # project_obs_list.append(proj_obs_j)
+            # y_his_vec = self.vstack_comb(self.y_his) # recall y_his is (io_length, p)
+            # print(f'shape of proj_obs_j: {proj_obs_j.shape}, shape of y_his_vec: {y_his_vec.shape}')
+            # proj_y_his_j_vec =  proj_obs_j@y_his_vec # 2d column array, [y1(0), y1(1), ...,y1(io_length-1), y2(0), ....]
+            # check unvstack
+            # proj_y_his_j = self.unvstack(proj_y_his_j_vec,self.problem.io_length)
+            # proj_y_his_j = np.reshape(proj_y_his_j_vec,(self.problem.io_length,self.problem.p),order='F')
+            # subprob_y_list.append(proj_y_his_j)
+        # subprob_y = np.dstack(subprob_y_list)
+        # ************************************************************************************
+
+        # Observation projection tilde{P}_ij per sensor and per subspace
+        # sensor_indexed_observation_subspaces[i] is a list of observation subspace O_i (V^j), j = 1,...,r
+        sensor_indexed_observation_subspaces = self._compute_sensor_indexed_observation_subspaces(
+            generalized_eigenspace_list
+        )
 
         subprob_a_list = []
-        subprob_y_list = []
         subprob_y_new_list = []
         project_obs_list = []
         for j in range(r):
             # for the generalized eigenspace V^j
             proj_gs_j = self.construct_proj(generalized_eigenspace_list,j) # This is P_j: R^n -> V^j
-            proj_obs_j = self.construct_proj(observable_space_list,j) # This is tilde_P_j: O(R^n) -> O(V^j)
-            project_obs_list.append(proj_obs_j)
 
             # construct subsystem data A_j, C_j, Y_j for subspace V^j
             proj_a_j = proj_gs_j@self.problem.A # 2d array
-            y_his_vec = self.vstack_comb(self.y_his) # recall y_his is (io_length, p)
-            # print(f'shape of proj_obs_j: {proj_obs_j.shape}, shape of y_his_vec: {y_his_vec.shape}')
-            proj_y_his_j_vec =  proj_obs_j@y_his_vec # 2d column array, [y1(0), y1(1), ...,y1(io_length-1), y2(0), ....]
             subprob_a_list.append(proj_a_j)
-            # check unvstack
-            # proj_y_his_j = self.unvstack(proj_y_his_j_vec,self.problem.io_length)
-            proj_y_his_j = np.reshape(proj_y_his_j_vec,(self.problem.io_length,self.problem.p),order='F')
             
-            # testing. Observ projection per sensor and per subspace
-            y_ij_list = []
-            for i in range(self.problem.p):
-                observ_space_sensor_i_list = sensor_indexed_observation_subspaces[i]
-                # print(f'observ_space_ij_list:{observ_space_sensor_i_list}')
-                proj_obs_ji = self.construct_proj(observ_space_sensor_i_list,j)  # This is tilde_P_ij: Oi(R^n) -> Oi(V^j)
-                Yi = self.y_his[:,i:i+1]
-                y_ij = proj_obs_ji@Yi
-                y_ij_list.append(y_ij) # append over all i
-            proj_y_his_j_new = np.hstack(y_ij_list)
-            
-            # print('================Still some strange things happening==================')
-            # print(f'proj_y_his_j: {proj_y_his_j}')
-            # print(f'proj_y_his_j_new:{proj_y_his_j_new}')
-            # print(f'difference:{proj_y_his_j - proj_y_his_j_new}')
-
-            subprob_y_list.append(proj_y_his_j)
+            # Observ projection per sensor for subspace V^j
+            proj_y_his_j_new, project_obs_j = self._compute_proj_y_his_j(sensor_indexed_observation_subspaces,j)
             subprob_y_new_list.append(proj_y_his_j_new)
+            project_obs_list.append(project_obs_j)
+        
         # 3d narray with dimension (n,n,r)
         subprob_a = np.dstack(subprob_a_list)
         # 3d naaray with dimension (io_length,p,r)
-        # subprob_y = np.dstack(subprob_y_list)
-        #--------------Here we choose projection per sensor-----------#
         subprob_y= np.dstack(subprob_y_new_list)
 
-        # print('============================================')
-        # print(f'subprob_y: {subprob_y[0,0,0]}')
-        # print(f'subprob_y_new:{subprob_y_new[0,0,0]}')
-        # this is true only if the eigenvalues are reals.
-        # assert linalg.norm(subprob_a - subprob_a.real)<= EPS
-        # assert linalg.norm(subprob_y - subprob_y.real)<= EPS
+        # remove imaginary part
+        # imaginary part appears only if self.problem.A has complex eigenvalues
         if linalg.norm(subprob_a - subprob_a.real)<= EPS:
             subprob_a = subprob_a.real
         if linalg.norm(subprob_y - subprob_y.real)<= EPS:
             subprob_y = subprob_y.real
 
         # test if the projected subproblem is correct
+        self._test_projected_subproblem_data(r,subprob_a,project_obs_list)
+        
+        # print(f'shape of subprob_y: {subprob_y.shape}')
+        return subprob_a, self.problem.C, subprob_y
+    
+    def _compute_generalized_eigenspace_list(self,unique_eigvals, counts):
+        generalized_eigenspace_list = [] # for a list of V^j
+        r = len(unique_eigvals)
+        for j in range(r):
+            eigval =  unique_eigvals[j]
+            am = counts[j]
+            generalized_eigspace = self.compute_generalized_eigenspace(eigval,am, self.problem.A)
+            generalized_eigenspace_list.append(generalized_eigspace)
+        return generalized_eigenspace_list
+    
+    def _compute_sensor_indexed_observation_subspaces(self,generalized_eigenspace_list):
+        r = len(generalized_eigenspace_list)
+        sensor_indexed_observation_subspaces = []
+        for i in range(self.problem.p):
+            observ_space_sensor_i_list = []
+            obser_i = self.obser[:,:,i]
+            for j in range(r):
+                generalized_eigspace = generalized_eigenspace_list[j]
+                observ_space_ij =  obser_i@generalized_eigspace #io-length*dim(Vj) 2d array
+                observ_space_sensor_i_list.append(observ_space_ij)
+            sensor_indexed_observation_subspaces.append(observ_space_sensor_i_list)
+        return sensor_indexed_observation_subspaces
+
+    def _compute_proj_y_his_j(self,sensor_indexed_observation_subspaces,j):
+        y_ij_list = []
+        proj_obs_j_list = []
+        for i in range(self.problem.p):
+            observ_space_sensor_i_list = sensor_indexed_observation_subspaces[i]
+            # print(f'observ_space_ij_list:{observ_space_sensor_i_list}')
+            proj_obs_ji = self.construct_proj(observ_space_sensor_i_list,j)  # This is tilde_P_ij: Oi(R^n) -> Oi(V^j)
+            Yi = self.y_his[:,i:i+1]
+            y_ij = proj_obs_ji@Yi
+            y_ij_list.append(y_ij) # append over all i
+            proj_obs_j_list.append(proj_obs_ji)
+        
+        proj_y_his_j = np.hstack(y_ij_list)
+        project_obs_j = linalg.block_diag(*proj_obs_j_list)
+        # print(f'project_obs_j shape :{project_obs_j.shape}')
+        return proj_y_his_j,project_obs_j
+    
+    def _test_projected_subproblem_data(self,r,subprob_a,project_obs_list):
+        obser_full = self.vstack_comb(self.obser)
         x = np.random.normal(3,3,size=(self.problem.n,1))
         ax = self.problem.A@x
         oy = obser_full@x
@@ -451,22 +468,22 @@ class SecureStateReconstruct():
             ax_j = subprob_a[:,:,j]@x
             ax_prime = ax_prime + ax_j
 
-            oy_j = project_obs_list[j]@oy
+            projection_obs_j = project_obs_list[j]
+            oy_j = projection_obs_j@oy
             oy_prime = oy_prime + oy_j
-        assert linalg.norm(ax - ax_prime)<= EPS
-        # print(f'linalg.norm(oy - oy_prime) {linalg.norm(oy - oy_prime)}')
-        # assert linalg.norm(oy - oy_prime)<= EPS
-        
-        # print(f'shape of subprob_y: {subprob_y.shape}')
-        return subprob_a, self.problem.C, subprob_y
+        assert linalg.norm(ax - ax_prime)<= 1e-6, 'subprob_a in subssr data generation fails simple example'
+        if linalg.norm(oy - oy_prime)> 1e-3: 
+            print(f'Warning: project_obs_list in subssr data generation example has an error {linalg.norm(oy - oy_prime)} ')
 
-    def solve_initial_state_subssr(self, subspace,error_bound = 1):
+    def solve_initial_state_subssr(self,eoi,subspace,error_bound = 1):
         '''
         It solves initial states for sub-SSR problem. One have to use a voting to determine the initial state.
 
         Consider both brute-force approach and voting approach for subssr problem
 
         For now we only consider gm = 1 case and individual sensors w.r.t. which the system is measurable in that subspace
+
+        eoi -- eigenvalue observability index. Same as soi sparse obser. index if gm = 1 for all eigenvalues.
         '''
         possible_states_list = []
         corresp_sensors_list = []
@@ -492,14 +509,13 @@ class SecureStateReconstruct():
                 residuals_list.append(residuals)
 
         # voting on states_to_vote_list
-        # print(f'states_to_vote_list: {states_to_vote_list}')
         # sorted_states = [[0,(0,2,3)],[1,(1,4)] ,... ] [state, corresponding sensors]
-        sorted_states =  self.vote_on_states(states_to_vote_list)
+        sorted_states =  self.vote_on_states(states_to_vote_list, error_bound=1e-2)
         # print(f'sorted_states, {sorted_states}')
         # populating possible_states and corresp_sensors
         for state_ind in sorted_states:
             # voting criterion: votes \ge p' - s, where p' is the eigenvalue observability + 1
-            if len(sorted_states[state_ind])>= self.problem.p - self.problem.s:
+            if len(sorted_states[state_ind])>= eoi+1 - self.problem.s:
                 states_list = [states_to_vote_list[i] for i in sorted_states[state_ind]]
                 # averaging out the "same" states
                 average_state = np.average(np.hstack(states_list),axis=1).reshape(-1,1)
@@ -539,7 +555,7 @@ class SecureStateReconstruct():
         def is_same_state(state1,state2):
             return linalg.norm(state1 - state2)<error_bound
         counts = {}
-        # e.g., counts = {0:3, 1:2} meaning the first state has 3 votes
+        # e.g., counts = {0:3, 1:2} meaning the first state has 3 votes, the second state has 2 votes
         counts[0] = [ ]
 
         for ind in range(len(states_to_vote_list)):
@@ -964,13 +980,6 @@ if __name__ == "__main__":
 
         # decompose ssr to sub_ssr problems
         subprob_a, subprob_c, subprob_y = ssr_solution.generate_subssr_data()
-        # print(f'geometric multiplicity count: {gm_list}')
-        # print(f'measurement for first sensor i  and last subspace j {subprob_y[:,0,-1]}')    
-        # print(f'measurement for sensor i = 7 and subspace {subprob_y[:,7,3]}')   
-
-        # solve sub_ssr problem, return possible states and corresponding attacked sensors
-
-        # check for sensor compatibility and generate possible initial states
 
         # give cbf parameters H, q, gamma, solve for input feasible region
         subspace_states_attacked_sensors_list = []
@@ -989,7 +998,7 @@ if __name__ == "__main__":
             # solution 1: brute-force for subproblems
             # possible_states,corresp_sensors, _ = sub_solution.solve_initial_state(error_bound = 1)
             # solution 2: by voting
-            states, attacked_sensors_list = sub_solution.solve_initial_state_subssr(error_bound = 1,subspace = generalized_eigenspace_list[j])
+            states, attacked_sensors_list = sub_solution.solve_initial_state_subssr(eoi,generalized_eigenspace_list[j])
             # print(f'states:{states}')
             # print(f'attacked_sensors_list: {attacked_sensors_list}')
             if states is None:
