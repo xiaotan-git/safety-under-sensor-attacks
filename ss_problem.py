@@ -353,29 +353,6 @@ class SecureStateReconstruct():
 
         generalized_eigenspace_list = self._compute_generalized_eigenspace_list(unique_eigvals, counts) # for a list of V^j
 
-        # ******************************Not used*********************************************
-        # Here we compute for a list of O(V^j) and the projection tilde_P_j: O(R^n) -> O(V^j). 
-        # This part of the code turns out to be not useful
-        # obser_full = self.vstack_comb(self.obser) # (O_1, O_2, ..., O_p) stacked vertically
-
-        # observable_space_list = [] 
-        # for j in range(r):
-            # obser_subspace = obser_full@generalized_eigspace
-            # observable_space_list.append(obser_subspace)
-        # subprob_y_list = []
-        # for j in range(r):
-            # proj_obs_j = self.construct_proj(observable_space_list,j) # This is 
-            # project_obs_list.append(proj_obs_j)
-            # y_his_vec = self.vstack_comb(self.y_his) # recall y_his is (io_length, p)
-            # print(f'shape of proj_obs_j: {proj_obs_j.shape}, shape of y_his_vec: {y_his_vec.shape}')
-            # proj_y_his_j_vec =  proj_obs_j@y_his_vec # 2d column array, [y1(0), y1(1), ...,y1(io_length-1), y2(0), ....]
-            # check unvstack
-            # proj_y_his_j = self.unvstack(proj_y_his_j_vec,self.problem.io_length)
-            # proj_y_his_j = np.reshape(proj_y_his_j_vec,(self.problem.io_length,self.problem.p),order='F')
-            # subprob_y_list.append(proj_y_his_j)
-        # subprob_y = np.dstack(subprob_y_list)
-        # ************************************************************************************
-
         # Observation projection tilde{P}_ij per sensor and per subspace
         # sensor_indexed_observation_subspaces[i] is a list of observation subspace O_i (V^j), j = 1,...,r
         sensor_indexed_observation_subspaces = self._compute_sensor_indexed_observation_subspaces(
@@ -384,24 +361,57 @@ class SecureStateReconstruct():
 
         subprob_a_list = []
         subprob_y_new_list = []
-        project_obs_list = []
+        project_obs_new_list = []
+        # list of lists, proj_obs_ij_list[j][i] gives tilde_P_ij
+        proj_obs_ij_list = []
         for j in range(r):
             # for the generalized eigenspace V^j
             proj_gs_j = self.construct_proj(generalized_eigenspace_list,j) # This is P_j: R^n -> V^j
 
             # construct subsystem data A_j, C_j, Y_j for subspace V^j
-            proj_a_j = proj_gs_j@self.problem.A # 2d array
+            proj_a_j = proj_gs_j@self.problem.A # (n,n) 2d array
             subprob_a_list.append(proj_a_j)
             
             # Observ projection per sensor for subspace V^j
-            proj_y_his_j_new, project_obs_j = self._compute_proj_y_his_j(sensor_indexed_observation_subspaces,j)
+            # proj_y_his_j_new: (io_length,p) 2-Narray sensor-indexed projected y_his for jth subspace
+            # project_obs_j: (io_length*p,io_length*p) 2-Narray sensor-indexed projection matrix from O(R^n) -> O(V^j) 
+            proj_y_his_j_new, project_obs_j, proj_obs_j_list = self._compute_proj_y_his_j(sensor_indexed_observation_subspaces,j)
             subprob_y_new_list.append(proj_y_his_j_new)
-            project_obs_list.append(project_obs_j)
+            project_obs_new_list.append(project_obs_j)
+            proj_obs_ij_list.append(proj_obs_j_list)
         
         # 3d narray with dimension (n,n,r)
         subprob_a = np.dstack(subprob_a_list)
         # 3d naaray with dimension (io_length,p,r)
-        subprob_y= np.dstack(subprob_y_new_list)
+        subprob_y = np.dstack(subprob_y_new_list)
+
+        ## *************Not used, only for testing if the projected subproblem is correct************
+        # Here we compute for a list of O(V^j) and the projection tilde_P_j: O(R^n) -> O(V^j). 
+        # obser_full = self.vstack_comb(self.obser) # (O_1, O_2, ..., O_p) stacked vertically
+        # observable_space_list = [] 
+        # subprob_y_list= []
+        # for j in range(r):
+        #     obser_subspace = obser_full@generalized_eigenspace_list[j]
+        #     observable_space_list.append(obser_subspace)
+        # project_obs_list = []
+        # for j in range(r):
+        #     proj_obs_j = self.construct_proj(observable_space_list,j) # This is 
+        #     project_obs_list.append(proj_obs_j)
+        #     y_his_vec = self.vstack_comb(self.y_his) # recall y_his is (io_length, p)
+        #     proj_y_his_j_vec =  proj_obs_j@y_his_vec # 2d column array, [y1(0), y1(1), ...,y1(io_length-1), y2(0), ....]
+        #     proj_y_his_j = self.unvstack(proj_y_his_j_vec,self.problem.io_length)
+        #     proj_y_his_j = np.reshape(proj_y_his_j_vec,(self.problem.io_length,self.problem.p),order='F')
+        #     subprob_y_list.append(proj_y_his_j)
+        # subprob_y = np.dstack(subprob_y_list)
+
+        # print('--------------with tilde_Pj-----------')
+        # self._test_projected_subproblem_data(r,subprob_a,project_obs_list)
+        # print('--------------with tilde_P_ij---------')
+        # np.random.seed(100)
+        # x = np.random.normal(3,3,size=(self.problem.n,1))
+        # self._test_projected_subproblem_data(x,r,subprob_a,project_obs_new_list,project_obs_list,proj_obs_ij_list)
+        # self._test2(x,r,project_obs_new_list,proj_obs_ij_list)
+        # ************************************************************************************
 
         # remove imaginary part
         # imaginary part appears only if self.problem.A has complex eigenvalues
@@ -409,11 +419,6 @@ class SecureStateReconstruct():
             subprob_a = subprob_a.real
         if linalg.norm(subprob_y - subprob_y.real)<= EPS:
             subprob_y = subprob_y.real
-
-        # test if the projected subproblem is correct
-        self._test_projected_subproblem_data(r,subprob_a,project_obs_list)
-        
-        # print(f'shape of subprob_y: {subprob_y.shape}')
         return subprob_a, self.problem.C, subprob_y
     
     def _compute_generalized_eigenspace_list(self,unique_eigvals, counts):
@@ -441,6 +446,7 @@ class SecureStateReconstruct():
 
     def _compute_proj_y_his_j(self,sensor_indexed_observation_subspaces,j):
         y_ij_list = []
+        # this list iterates over all i given a subspace j
         proj_obs_j_list = []
         for i in range(self.problem.p):
             observ_space_sensor_i_list = sensor_indexed_observation_subspaces[i]
@@ -454,26 +460,88 @@ class SecureStateReconstruct():
         proj_y_his_j = np.hstack(y_ij_list)
         project_obs_j = linalg.block_diag(*proj_obs_j_list)
         # print(f'project_obs_j shape :{project_obs_j.shape}')
-        return proj_y_his_j,project_obs_j
+        return proj_y_his_j,project_obs_j, proj_obs_j_list
     
-    def _test_projected_subproblem_data(self,r,subprob_a,project_obs_list):
+    def _test_projected_subproblem_data(self,x,r,subprob_a,project_obs_list1,project_obs_list2,proj_obs_ij_list):
+        # project_obs_list1: list of bar_P_j, the blockdiagnal of tilde_pij over i
+        # project_obs_list2: list of tilde_P_j, the projection from O(R^n) -> O(V^j)
+        # proj_obs_ij_list: list of lists, proj_obs_ij_list[j][i] the projection from Oi(R^n) -> Oi(V^j)
         obser_full = self.vstack_comb(self.obser)
-        x = np.random.normal(3,3,size=(self.problem.n,1))
+        # np.random.seed(100)
+        # x = np.random.normal(3,3,size=(self.problem.n,1))
         ax = self.problem.A@x
-        oy = obser_full@x
+        y = obser_full@x
 
         ax_prime = np.zeros((self.problem.n,1))
-        oy_prime = np.zeros((self.problem.n*self.problem.p,1))
+        y_prime1 = np.zeros((self.problem.io_length*self.problem.p,1))
+        y_prime2 = np.zeros((self.problem.io_length*self.problem.p,1))
+        y_prime3 = np.zeros((self.problem.io_length*self.problem.p,1))
+
         for j in range(r):
             ax_j = subprob_a[:,:,j]@x
             ax_prime = ax_prime + ax_j
+            # calculation 1: bar_P_j
+            projection_obs_j1 = project_obs_list1[j]
+            y_j1 = projection_obs_j1@y
+            y_prime1 = y_prime1 + y_j1
+            # calculation 2: tilde_P_j
+            projection_obs_j2 = project_obs_list2[j]
+            y_j2 = projection_obs_j2@y
+            y_prime2 = y_prime2 + y_j2
+            # calculation 3: tilde_P_ij
+            pij_oi_list = []
+            for i in range(self.problem.p):
+                pij = proj_obs_ij_list[j][i]
+                pij.reshape(1,-1)
+                oi = self.obser[:,:,i]
+                pij_oi = pij@oi
+                pij_oi_list.append(pij_oi)
+            rhs_mat = np.vstack(pij_oi_list)
+            y_j3 = rhs_mat@x
+            y_prime3 = y_prime3 + y_j3
 
-            projection_obs_j = project_obs_list[j]
-            oy_j = projection_obs_j@oy
-            oy_prime = oy_prime + oy_j
+            print(f'--------------j = {j} ---------')
+            # print(f'bar_P_j Ox: {y_j1}')
+            # print(f'tilde_P_j Ox: {y_j2}')
+            print(f'difference norm (bar_P_j case   -  tilde_P_j case): {np.linalg.norm(y_j1- y_j2)}')
+            print(f'difference norm (bar_P_j case  -  tilde_P_ij case): {np.linalg.norm(y_j1- y_j3)}')
+            print(f'difference norm (tilde_P_j case - tilde_P_ij case): {np.linalg.norm(y_j2- y_j3)}')
+
         assert linalg.norm(ax - ax_prime)<= 1e-6, 'subprob_a in subssr data generation fails simple example'
-        if linalg.norm(oy - oy_prime)> 1e-3: 
-            print(f'Warning: project_obs_list in subssr data generation example has an error {linalg.norm(oy - oy_prime)} ')
+        # if linalg.norm(y - y_prime1)> 1e-3: 
+            # print(f'Warning: project_obs_list in subssr data generation example has an error {linalg.norm(y - y_prime1)} \n\n')
+        print(f'total y has an error              (y - bar_P_j case): {linalg.norm(y - y_prime1)} ')
+        print(f'total y has an error            (y - tilde_P_j case):  {linalg.norm(y - y_prime2)} ')
+        print(f'total y has an error           (y - tilde_P_ij case):  {linalg.norm(y - y_prime3)} ')
+        print(f'total y has an error (bar_P_j case - tilde_P_j case): {linalg.norm(y_prime1 - y_prime2)} ')
+        # print(f'y: {y}')
+
+    def _test2(self,x,r,project_obs_list,proj_obs_ij_list):
+        obser_full = self.vstack_comb(self.obser)
+        # np.random.seed(100)
+        # x = np.random.normal(3,3,size=(self.problem.n,1))
+        for j in range(r):
+            P_bar_j = project_obs_list[j]
+            lhs = P_bar_j@obser_full@x
+
+            pij_oi_list = []
+            for i in range(self.problem.p):
+                pij = proj_obs_ij_list[j][i]
+                pij.reshape(1,-1)
+                oi = self.obser[:,:,i]
+                pij_oi = pij@oi
+                pij_oi_list.append(pij_oi)
+            rhs_mat = np.vstack(pij_oi_list)
+            rhs = rhs_mat@x
+
+            if np.linalg.norm(lhs-rhs)>1e-4:
+                print('-------------------------------------')
+                print(f'subspace j:{j}, error: {np.linalg.norm(lhs-rhs)}')
+                # print(f'lhs: {lhs}, \n rhs: {rhs}')
+                print(f'mat error: {P_bar_j@obser_full-rhs_mat}')
+
+
+
 
     def solve_initial_state_subssr(self,eoi,subspace,error_bound = 1):
         '''
@@ -866,6 +934,7 @@ class SecureStateReconstruct():
         j = 0,1,..., r-1
         '''
         full_space = np.hstack(subspace_list) #  = V = (sp1, sp2, ..., spr)
+        full_space.astype(np.float128)
         rank_full_space = np.linalg.matrix_rank(full_space)
         
         assert rank_full_space == full_space.shape[1], f"rank_full_space:{rank_full_space}, full_space.shape: {full_space.shape}"
@@ -880,8 +949,10 @@ class SecureStateReconstruct():
                 tem_list.append(subspace)
         
         lhd = np.hstack(tem_list)
-
-        proj_mat = lhd @ linalg.inv(full_space.T @ full_space) @ full_space.T 
+        # It is suggested that linalg.inv is not reliable. See https://stackoverflow.com/questions/31256252/why-does-numpy-linalg-solve-offer-more-precise-matrix-inversions-than-numpy-li
+        # proj_mat = lhd @ linalg.inv(full_space.T @ full_space) @ full_space.T 
+        proj_mat = lhd @ linalg.pinv(full_space)
+        proj_mat.astype(np.float64)
         return proj_mat
     
     @staticmethod
