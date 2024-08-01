@@ -25,28 +25,30 @@ class SafeProblemUnderAttack():
     '''
     def __init__(self,ss_problem:SSProblem,h,q,gamma) -> None:
         self.problem = ss_problem
-        self.ssr = SecureStateReconst(ss_problem)
-
-        self.a = ss_problem.A
-        self.b = ss_problem.B
-        self.c = ss_problem.C
-        self.d = ss_problem.D
-        self.u_seq = ss_problem.u_seq
 
         self.h = h
         self.q = q
         self.gamma = gamma
-        self.tspan = ss_problem.tspan
 
         self.hb = h@self.b
         self.k = (1-gamma)*h@np.linalg.matrix_power(self.a,self.tspan) - h@np.linalg.matrix_power(self.a,self.tspan + 1)
 
+    def cal_cbf_condition_for_state(self,state)-> LinearInequalityConstr:
+        pass
+    
+    def merge_multiple_LIC(self,constr_list)-> LinearInequalityConstr:
+        pass
 
-    def cal_safe_input_constr_wSSR(self, states) -> LinearInequalityConstr:
+    def cal_safe_input_constr_wSSR(self, possible_states) -> LinearInequalityConstr:
         '''
         This method calculates CBF conditions over a set of states
         '''
-        pass
+        cbf_conditions = []
+        for state in possible_states:
+            cbf_condition = self.cal_cbf_condition_for_state(state)
+            cbf_conditions.append(cbf_condition)
+
+        total_cbf_condition = self.merge_multiple_LIC(cbf_conditions)
 
     def cal_safe_input_constr_woSSR(self,u_seq,y_his)-> LinearInequalityConstr:
         '''

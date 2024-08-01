@@ -972,41 +972,25 @@ class SecureStateReconstruct():
         return subspace@y, residuals, rank
 
 if __name__ == "__main__":
-    # np.random.seed(10)
+    '''
     # define system model and measurement model
-    Ac = np.array([[0, 1, 0, 0],[0, -0.2, 0, 0],[0,0,0,1],[0,0,0,-0.2]])
+    Ac = np.array([[0, 1, 0, 0],[1, -0.2, 0, 0],[0,0,0,1],[0,0,1,-0.2]])
+    Ac = np.random.normal(3,3,size=(4,4))
     Bc = np.array([[0, 0],[1, 0],[0, 0],[0,1]])
     Cc = np.array([[1,0,0,0],[1,0,0,0],[0,1,0,0],[0,1,0,0],[0,0,1,0],[0,0,1,0],[0,0,0,1],[0,0,0,1]])
     Dc = np.zeros((Cc.shape[0],Bc.shape[1]))
-
-    # randomize system to test 
-    # choose Ac to have real eigenvalues
-    shape_Ac = [4,4]
-    Ac = np.random.normal(3,3,size=shape_Ac)
-    eig_vals = linalg.eigvals(Ac)
-    while(not all(np.isreal(eig_vals))):
-        Ac = np.random.normal(3,3,size=shape_Ac)
-        eig_vals = linalg.eigvals(Ac)
-    print(f'Ac eig_vals: {eig_vals}')
-
-    Bc = np.random.normal(1,1,size=[shape_Ac[0],2])
-    Cc = np.random.normal(1,1,size=[8,shape_Ac[0]]) # if given one sensor redundancy
-    Dc = np.zeros((Cc.shape[0],Bc.shape[1]))
-
-    # Bc = np.random.normal(3,3,size=[4,2])
-    # Cc = np.random.normal(1,1,size=[8,4]) # if given enough sensor redundancy
-
-    s = 4
+    s = 1
+    is_testing_subssr = True
 
     # generate discrete-time system
     dtsys_a, dtsys_b, dtsys_c, dtsys_d = SSProblem.convert_ct_to_dt(Ac,Bc,Cc,Dc,TS)
     # define input output data
-    init_state1 = np.random.normal(2,2,size=(shape_Ac[0],1))
+    init_state1 = np.random.normal(2,2,size=(Ac.shape[0],1))
     init_state2 = 2*init_state1
     # u_seq = np.array([[1,1],[1,1],[1,1],[0,0]])
     # assume sensors 1,3,5 are under attack
-    sensor_initial_states = [init_state1,init_state1,init_state1,init_state1,
-                             init_state2,init_state2,init_state2,init_state2]
+    sensor_initial_states = [init_state2 if i < s else init_state1 for i in range(Bc.shape[0])]
+
     u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states,
                                                                             s = s,is_noisy = False, noise_level=1e-8,u_seq = None)
 
@@ -1014,30 +998,22 @@ if __name__ == "__main__":
     ss_problem = SSProblem(dtsys_a, dtsys_b, dtsys_c, dtsys_d, tilde_y_his, 
                            attack_sensor_count=s,input_sequence=u_seq,measurement_noise_level= noise_level )
     print(f'A: \n {ss_problem.A},  \n B:\n  {ss_problem.B}, \n C: \n {ss_problem.C}, \n D:\n {ss_problem.D}')
-    # print('input_sequence:',ss_problem.u_seq)
-    # print('tilde_y_his:',ss_problem.tilde_y_his)
 
-    # define and test a solution instance
-    is_testing_ssr = True
-    # comb1 = [[0,2,4,6,7],[0,1,4,6,7]]
     # ssr_solution = SecureStateReconstruct(ss_problem,possible_comb=comb1)
     ssr_solution = SecureStateReconstruct(ss_problem)
-    if is_testing_ssr:
-        # print(f'y_his: \n {ssr_solution.y_his}')
-        # possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1)
-        possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 1e-3)
+    # possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1)
+    possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 1e-3)
 
-        if possible_states is not None:
-            for ind in range(corresp_sensors.shape[0]):
-                sensors = corresp_sensors[ind,:]
-                state = possible_states[:,ind]
-                print('--------------------------------------------------------------------')
-                print(f'Identified possible states:{state} for sensors {sensors}')
-                print(f'Estimated state - initial state 1 is \n {state.reshape(-1,1)-init_state1}')
-                print(f'Estimated state - initial state 2 is \n {state.reshape(-1,1)-init_state2}')
-# *************** below are algorithms under development **********************#
-    # test decompostion method
-    is_testing_subssr = True
+    if possible_states is not None:
+        for ind in range(corresp_sensors.shape[0]):
+            sensors = corresp_sensors[ind,:]
+            state = possible_states[:,ind]
+            print('--------------------------------------------------------------------')
+            print(f'Identified possible states:{state} for sensors {sensors}')
+            print(f'Estimated state - initial state 1 is \n {state.reshape(-1,1)-init_state1}')
+            print(f'Estimated state - initial state 2 is \n {state.reshape(-1,1)-init_state2}')
+    
+    # decompostion method
     if is_testing_subssr:
         # sparse observability index
         soi = SecureStateReconstruct.compute_sparse_observability(ss_problem.A,ss_problem.C)
@@ -1066,12 +1042,9 @@ if __name__ == "__main__":
             subproblem = SSProblem(sub_a, dtsys_b, sub_c, dtsys_d,sub_y_his, 
                                    attack_sensor_count=s,is_sub_ssr=True)
             sub_solution = SecureStateReconstruct(subproblem)
-            # solution 1: brute-force for subproblems
-            # possible_states,corresp_sensors, _ = sub_solution.solve_initial_state(error_bound = 1)
-            # solution 2: by voting
+            # solution by voting
             states, attacked_sensors_list = sub_solution.solve_initial_state_subssr(eoi,generalized_eigenspace_list[j])
-            # print(f'states:{states}')
-            # print(f'attacked_sensors_list: {attacked_sensors_list}')
+
             if states is None:
                 raise KeyError(f'state in subspace {j} is None. Check')
             states = states.transpose() # to zip
@@ -1086,3 +1059,5 @@ if __name__ == "__main__":
                 print(f'Estimated state {state_ind} - initial state 1 is \n {full_state.reshape(-1,1)-init_state1}')
                 print(f'Estimated state {state_ind} - initial state 2 is \n {full_state.reshape(-1,1)-init_state2}')
                 state_ind = state_ind +1
+    '''
+    pass
