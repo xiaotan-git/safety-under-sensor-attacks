@@ -8,7 +8,7 @@ class LinearInequalityConstr():
     '''
     This class defines linear inequality constraints and methods including compare, visualize
 
-    linear inequality constraints are given in forms of a_mat x >= b_vec (or, -a_mat x \leq -b_vec)
+    linear inequality constraints: a_mat x + b_vec \geq 0 (or, -a_mat x \leq b_vec)
     a: (M,N) array
     b: (M,1) array 
     '''
@@ -28,6 +28,12 @@ class LinearInequalityConstr():
         a_mat = np.vstack((self.a_mat, linear_ineq_constr.a_mat))
         b_vec = np.vstack((self.b_vec, linear_ineq_constr.b_vec))
         return LinearInequalityConstr(a_mat,b_vec)
+    
+    def is_satisfy(self,u):
+        u = u.reshape(-1,1)
+        assert u.shape[0] == self.a_mat.shape[1]
+
+        return all(self.a_mat@u + self.b_vec +1e-6 >= 0)
 
 class SafeProblem():
     '''
@@ -122,7 +128,7 @@ class SafeProblem():
             kv_max = kv.max(axis = 1)
             kv_max = kv_max.reshape(-1,1)
             kv_maxsum = kv_maxsum + kv_max 
-        
+        # a_mat x + b_vec \geq 0
         a_mat = self.h @ self.problem.B
         b_vec = - kv_maxsum - Q_ut
 
@@ -138,7 +144,7 @@ class SafeProblem():
         qp_P = matrix(np.identity(u_nom.shape[0]))
         qp_q = matrix(-u_nom,(u_nom.shape[0],1),'d') #  qp_q is a m*1 matrix
         qp_G = matrix(-lic.a_mat) 
-        qp_h = matrix(-lic.b_vec,(lic.b_vec.shape[0],1),'d') # qp_h is a x*1 matrix
+        qp_h = matrix(lic.b_vec,(lic.b_vec.shape[0],1),'d') # qp_h is a x*1 matrix
 
         solvers.options['show_progress'] = False # mute optimization output
         solvers.options['maxiters'] = 500 # increase max iteration number
@@ -146,6 +152,8 @@ class SafeProblem():
         solvers.options['reltol'] = 1e-5
         try:
             solv_sol = solvers.qp(qp_P,qp_q,qp_G,qp_h)
+            if solv_sol['status'] == 'unknown':
+                print('warning: safe control is approximately computed.')
            
         except:
             print('cvxopt solver failed:')
@@ -167,7 +175,7 @@ class SafeProblem():
         # print(f'lic.a_mat:\n {lic.a_mat}')
         # print(f'lic.b_vec:\n {lic.b_vec}')
         u = self.cal_safe_qp(u_nom,lic)
-        return u
+        return u,lic
 
     def max_kv(self):
         possible_init_states,_,_ = self.ssr.solve_initial_state()
@@ -211,43 +219,43 @@ class SafeProblem():
 
 
 if __name__ =='__main__':
+    pass
+    # # define system model and measurement model
+    # Ac = np.array([[0, 1, 0, 0],[0, -0.2, 0, 0],[0,0,0,1],[0,0,0,-0.2]])
+    # Bc = np.array([[0, 0],[1, 0],[0, 0],[0,1]])
+    # Cc = np.array([[1,0,0,0],[1,0,0,0],[0,1,0,0],[0,1,0,0],[0,0,1,0],[0,0,1,0],[0,0,0,1],[0,0,0,1]])
+    # # Cc = np.vstack((Cc,Cc)) # if given enough sensor redundancy
+    # Dc = np.zeros((Cc.shape[0],Bc.shape[1]))
+    # p = np.shape(Cc)[0]
+    # s = 3
+    # ss_problem = SSProblem(Ac,Bc,Cc,Dc,s)
 
-    # define system model and measurement model
-    Ac = np.array([[0, 1, 0, 0],[0, -0.2, 0, 0],[0,0,0,1],[0,0,0,-0.2]])
-    Bc = np.array([[0, 0],[1, 0],[0, 0],[0,1]])
-    Cc = np.array([[1,0,0,0],[1,0,0,0],[0,1,0,0],[0,1,0,0],[0,0,1,0],[0,0,1,0],[0,0,0,1],[0,0,0,1]])
-    # Cc = np.vstack((Cc,Cc)) # if given enough sensor redundancy
-    Dc = np.zeros((Cc.shape[0],Bc.shape[1]))
-    p = np.shape(Cc)[0]
-    s = 3
-    ss_problem = SSProblem(Ac,Bc,Cc,Dc,s)
+    # # define attacking model
+    # fake_state_count = 1
+    # init_states = np.array([[1.,2.],[1.,2.],[1.,2.],[1.,1.]])
+    # att_ind = [0,2,4] # sensors 1, 3, 5
+    # # att_dic: which initial state and its corresponding sensors
+    # # 0 -- healthy sensor, 1, 2, ... -- attacked sensors
+    # att_dic = {0:[i for i in range(p) if i not in att_ind], 1:att_ind}
 
-    # define attacking model
-    fake_state_count = 1
-    init_states = np.array([[1.,2.],[1.,2.],[1.,2.],[1.,1.]])
-    att_ind = [0,2,4] # sensors 1, 3, 5
-    # att_dic: which initial state and its corresponding sensors
-    # 0 -- healthy sensor, 1, 2, ... -- attacked sensors
-    att_dic = {0:[i for i in range(p) if i not in att_ind], 1:att_ind}
-
-    ss_problem.gen_attack_measurement(s=3,att_dic = att_dic,fake_state_count=fake_state_count,
-                                        init_states=init_states,noise=True)
+    # ss_problem.gen_attack_measurement(s=3,att_dic = att_dic,fake_state_count=fake_state_count,
+    #                                     init_states=init_states,noise=True)
     
-    h = np.array([[1,0,0,0],[-1,0,0,0],[0,1,0,0],[0,-1,0,0],[0,0,1,0],[0,0,-1,0],[0,0,0,1],[0,0,0,-1]])
-    q = np.array([[4],[-4],[4],[-4],[4],[-4],[4],[-4]])
-    gamma = 0.5
-    safe_prob = SafeProblem(ss_problem,h,q,gamma)
+    # h = np.array([[1,0,0,0],[-1,0,0,0],[0,1,0,0],[0,-1,0,0],[0,0,1,0],[0,0,-1,0],[0,0,0,1],[0,0,0,-1]])
+    # q = np.array([[4],[-4],[4],[-4],[4],[-4],[4],[-4]])
+    # gamma = 0.5
+    # safe_prob = SafeProblem(ss_problem,h,q,gamma)
 
-    # test for Question 1
-    print(f'max Kv: {safe_prob.max_kv()}')
-    print(f'max test formula: {safe_prob.max_test_formula()}')
-    diff = safe_prob.max_kv() - safe_prob.max_test_formula()
-    print(f'difference: {diff}, max diff: {diff.max()}')
+    # # test for Question 1
+    # print(f'max Kv: {safe_prob.max_kv()}')
+    # print(f'max test formula: {safe_prob.max_test_formula()}')
+    # diff = safe_prob.max_kv() - safe_prob.max_test_formula()
+    # print(f'difference: {diff}, max diff: {diff.max()}')
     
-    # test for Question 2
-    diff = safe_prob.test2()
-    diff_min = diff.min(axis=1)
-    diff_max = diff.max(axis=1)
-    diff_mmin = diff.min()
-    diff_mmax = diff.max()
-    print(f'diff min: {diff_min}, \n max: {diff_max}, \n min min: {diff_mmin}, \n max max:  {diff_mmax}')
+    # # test for Question 2
+    # diff = safe_prob.test2()
+    # diff_min = diff.min(axis=1)
+    # diff_max = diff.max(axis=1)
+    # diff_mmin = diff.min()
+    # diff_mmax = diff.max()
+    # print(f'diff min: {diff_min}, \n max: {diff_max}, \n min min: {diff_mmin}, \n max max:  {diff_mmax}')

@@ -135,7 +135,7 @@ class SSProblem():
     
     @classmethod         
     def generate_attack_measurement(cls,dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_indexed_init_state_list,
-                                    s = 2, is_noisy = True, noise_level = 0.001, io_length = None,u_seq = None):
+                                    s = 2, is_noisy = True, noise_level = 0.001, io_length = None,has_u_seq = True, u_seq = None):
         '''
         Generate the worst-case attack by assuming that the attacker tries to confuse the system with some states. 
         The correspondence between sensors and states is given in att_dic
@@ -153,11 +153,13 @@ class SSProblem():
         # measurement steps
         if io_length is None:
             io_length = n
-        # input sequence
-        if u_seq is None:
+        # input sequence generation if not given
+        if has_u_seq and u_seq is None:
         # random input_sequence, oldest input comes first, e.g., u_seq[0,:] -> u(0) 
             u_seq = np.random.uniform(-5,5,(io_length,m))
             u_seq[-1,:] = 0.0
+        if not has_u_seq:
+            u_seq = np.zeros((io_length,m))
 
         init_states = np.hstack(sensor_indexed_init_state_list)
         xt_new = init_states
@@ -545,7 +547,7 @@ class SecureStateReconstruct():
 
     def solve_initial_state_subssr(self,eoi,subspace,error_bound = 1):
         '''
-        It solves initial states for sub-SSR problem. One have to use a voting to determine the initial state.
+        It solves initial states for sub-SSR problem. Currently using voting to determine the initial state.
 
         Consider both brute-force approach and voting approach for subssr problem
 
