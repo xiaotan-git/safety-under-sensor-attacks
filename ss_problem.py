@@ -6,7 +6,7 @@ from scipy import linalg
 import control as ct
 
 # sampling rate
-TS = 0.01
+TS = 0.05
 EPS = 1e-6
 
 def nchoosek(v: List[int], k: int) -> List[List[int]]:
@@ -937,7 +937,7 @@ class SecureStateReconstruct():
         full_space.astype(np.float128)
         rank_full_space = np.linalg.matrix_rank(full_space)
         
-        assert rank_full_space == full_space.shape[1], f"rank_full_space:{rank_full_space}, full_space.shape: {full_space.shape}"
+        assert rank_full_space == full_space.shape[1], f"rank_full_space:{rank_full_space}, \n full_space: \n {full_space}"
         
         # to construct [0, ..., spj, ...., 0] 
         tem_list = []
@@ -972,15 +972,14 @@ class SecureStateReconstruct():
         return subspace@y, residuals, rank
 
 if __name__ == "__main__":
-    '''
     # define system model and measurement model
-    Ac = np.array([[0, 1, 0, 0],[1, -0.2, 0, 0],[0,0,0,1],[0,0,1,-0.2]])
-    Ac = np.random.normal(3,3,size=(4,4))
+    Ac = np.array([[1, 0, 0, 0],[0, 2, 0, 0],[0,0,3,0],[0,0,0,4]])
+    # Ac = np.random.normal(3,3,size=(4,4))
     Bc = np.array([[0, 0],[1, 0],[0, 0],[0,1]])
     Cc = np.array([[1,0,0,0],[1,0,0,0],[0,1,0,0],[0,1,0,0],[0,0,1,0],[0,0,1,0],[0,0,0,1],[0,0,0,1]])
     Dc = np.zeros((Cc.shape[0],Bc.shape[1]))
-    s = 1
-    is_testing_subssr = True
+    s = 0
+    is_testing_subssr = False
 
     # generate discrete-time system
     dtsys_a, dtsys_b, dtsys_c, dtsys_d = SSProblem.convert_ct_to_dt(Ac,Bc,Cc,Dc,TS)
@@ -989,7 +988,7 @@ if __name__ == "__main__":
     init_state2 = 2*init_state1
     # u_seq = np.array([[1,1],[1,1],[1,1],[0,0]])
     # assume sensors 1,3,5 are under attack
-    sensor_initial_states = [init_state2 if i < s else init_state1 for i in range(Bc.shape[0])]
+    sensor_initial_states = [init_state2 if i < s else init_state1 for i in range(Cc.shape[0])]
 
     u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states,
                                                                             s = s,is_noisy = False, noise_level=1e-8,u_seq = None)
@@ -1059,5 +1058,4 @@ if __name__ == "__main__":
                 print(f'Estimated state {state_ind} - initial state 1 is \n {full_state.reshape(-1,1)-init_state1}')
                 print(f'Estimated state {state_ind} - initial state 2 is \n {full_state.reshape(-1,1)-init_state2}')
                 state_ind = state_ind +1
-    '''
     pass

@@ -1,8 +1,10 @@
 import numpy as np
 from ss_problem import SSProblem, SecureStateReconstruct
+from safe_control import SafeProblem
 from scipy import linalg
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
+
 
 import timeit
 
@@ -192,7 +194,7 @@ def main():
     ssr_solution, eoi, init_state1, init_state2 = initialization(n,m,p,s,seed)
     solve_ssr(ssr_solution, eoi, init_state1, init_state2)
 
-def main_test_timing(n = 8, m = 3, s = 4, p_range=range(9,18)):
+def main_test_timing(n = 8, m = 3, s = 4, p_range=range(8,18)):
   
     seed = None
 
@@ -220,8 +222,43 @@ def main_test_timing(n = 8, m = 3, s = 4, p_range=range(9,18)):
     # Show the plot
     plt.show()
 
+def main_secure_and_safe_control():
+    n = 4
+    m = 4
+    p = 3
+    s = 1
+    seed = None
+
+    # initialization
+    ssr_solution, eoi, init_state1, init_state2 = initialization(n,m,p,s,seed)
+    # solve ssr by brute-force
+    possible_states,corresp_sensors, _ = ssr_solution.solve_initial_state(error_bound = 1e-3)
+    possible_states = possible_states.transpose()
+
+    # define CBF and solve
+    h = np.vstack([np.identity(n),-np.identity(n)])
+    q = 10*np.ones((2*n,1))
+    gamma = 0.5
+    u_nom = np.random.random((m,1))
+    safe_prob = SafeProblem(ssr_solution.problem,h,q,gamma)
+
+    # u_safe = safe_prob.cal_safe_control(u_nom,possible_states)
+    # print(f'u_safe: {u_safe}')
+
+    # assume initial_states_subssr is obtained
+    initial_states_subssr = []
+    for j in range(4):
+        possible_initial_states = np.random.random((n,3))
+        initial_states_subssr.append(possible_initial_states)
+    
+    lic = safe_prob.cal_safe_input_constr_woSSR(initial_states_subssr)
+    u_safe = safe_prob.cal_safe_qp(u_nom,lic)
+    print(f'u_safe: {u_safe}')
 
 
 if __name__=='__main__':
     # main()
-    main_test_timing()
+    # main_test_timing()
+    main_secure_and_safe_control()
+
+    
