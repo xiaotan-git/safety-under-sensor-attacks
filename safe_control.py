@@ -106,18 +106,6 @@ class SafeProblem():
         
         return left_mat@right_vec - gamma*q
 
-
-
-        fi = np.zeros((io_length,io_length*m))
-        # note that row count of Fi  =  io_length. The first row is zeros. 
-        # see (5) for definition
-        for t in range(1,io_length):
-            fi[t:t+1,:] = right_shift_row_array(fi[t-1:t,:],m)
-            # here for t-th row, t = 1,...,io_length -1, add the left most element Ci A^t B. 
-            fi[t:t+1,0:m] = Ci @ linalg.fractional_matrix_power(A,t-1) @ B 
-        return fi
-
-        self.problem.u_seq
     def cal_safe_input_constr_woSSR(self,initial_states_subssr)-> LinearInequalityConstr:
         '''
         This method implements our computationally efficient CBF conditions
