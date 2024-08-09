@@ -46,7 +46,7 @@ def generate_random_dtsystem_data(rng, n:int = 8, m:int = 3, p:int = 5,
     #     dtsys_a = np.random.normal(3,3,(n,n))
     #     eig_vals = linalg.eigvals(dtsys_a)
     # by construction
-    eig_vals = 1.0*rng.random((n,))+0.2 # eig value in [-10,-2] and [2,10]
+    eig_vals = 1.0*rng.random((n,))+0.1 # eig value in [-10,-2] and [2,10]
     eig_vals = np.multiply(np.sign(rng.random((n,)) - 1.0/2),eig_vals)
     diag_eig = np.diag(eig_vals)
 
@@ -168,8 +168,8 @@ def initialization(n,m,p,s,seed):
     dtsys_a, dtsys_b, dtsys_c, dtsys_d = generate_random_dtsystem_data(rng,n,m,p)
 
     # define true and fake initial states
-    init_state1 = rng.normal(0,5,(n,1))
-    init_state2 = 2*rng.normal(0,5,(n,1))
+    init_state1 = 10*rng.random((n,1)) -5
+    init_state2 = 10*rng.random((n,1)) -5
     sensor_initial_states = [init_state2 if i < s else init_state1 for i in range(p)]
 
     # define io data
@@ -210,6 +210,36 @@ def solve_ssr_timing(ssr_solution, eoi):
 
     execution_time_bruteforce = timeit.timeit(lambda : ssr_solution.solve_initial_state(error_bound=1e-3), number=100)
     return execution_time_decomposition/100*1000, execution_time_bruteforce/100*1000
+
+
+def solve_safe_control_by_brute_force(ssr_solution:SecureStateReconstruct, safe_prob:SafeProblem, u_nom):
+     # solve ssr by brute-force
+    possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1e-3)
+    possible_states = possible_states.transpose() # now possible_states[0] is one possible state
+    possible_states = remove_duplicate_states(possible_states)
+
+    u_safe1,lic1,flag1 = safe_prob.cal_safe_control(u_nom,possible_states)
+
+def solve_safe_control_by_decomposition(ssr_solution:SecureStateReconstruct, safe_prob:SafeProblem, u_nom, eoi):
+    # solve ssr by decomposition
+    possible_states_subssr= solve_ssr_by_decomposition(ssr_solution, eoi,is_initial_state=False)
+    u_safe2,lic2,flag2 = safe_prob.cal_safe_control(u_nom,possible_states_subssr)
+
+
+
+def solve_safe_control_woSSR(ssr_solution, safe_prob, u_nom, eoi):
+    initial_substates_subssr = solve_ssr_by_decomposition(ssr_solution, eoi, is_print = True,is_composed= False)
+    # print(f'initial_substates_subssr: {initial_substates_subssr}')
+    lic3 = safe_prob.cal_safe_input_constr_woSSR(initial_substates_subssr)
+    u_safe3,flag3 = safe_prob.cal_safe_qp(u_nom,lic3)
+
+def solve_safe_control_timing(ssr_solution, safe_prob, u_nom, eoi):
+    
+    execution_time_bruteforce = timeit.timeit(lambda : solve_safe_control_by_brute_force(ssr_solution, safe_prob, u_nom), number=100)
+    execution_time_decomposition = timeit.timeit(lambda : solve_safe_control_by_decomposition(ssr_solution, safe_prob, u_nom, eoi), number=100)
+    execution_time_woSSR = timeit.timeit(lambda : solve_safe_control_woSSR(ssr_solution, safe_prob, u_nom, eoi), number=100)
+    
+    return execution_time_decomposition/100*1000, execution_time_bruteforce/100*1000, execution_time_woSSR/100*1000
 
 def main_ssr():
     n = 8
@@ -275,10 +305,10 @@ def main_secure_and_safe_control():
     s = 4
     seed = None
 
+    print(f'S&S problem has {n} states, {m} inputs, {p} sensors, {s} attacked sensors.')
     # initialization
     ssr_solution, eoi, init_state1, init_state2 = initialization(n,m,p,s,seed)
-    # print(f'u_seq: {ssr_solution.problem.u_seq}')
-    
+
     # solve ssr by brute-force
     possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1e-3)
     possible_states = possible_states.transpose() # now possible_states[0] is one possible state
@@ -290,37 +320,83 @@ def main_secure_and_safe_control():
 
     # define CBF and solve safe control
     h = np.vstack([np.identity(n),-np.identity(n)])
-    q = 100*np.ones((2*n,1))
-    gamma = 0.5
-    u_nom = np.random.random((m,1))
+    q = 10*np.ones((2*n,1))
+    gamma = 0.8
+    u_nom = np.random.normal(0,3,(m,1))
     # print(f'u_nom: {u_nom}')
     safe_prob = SafeProblem(ssr_solution.problem,h,q,gamma)
 
-    u_safe1,lic1 = safe_prob.cal_safe_control(u_nom,possible_states)
-    # print(f'possible_states:{possible_states}')
-    # print(f'u_safe: {u_safe1}')
+    print('\n -----------------------  brute-force   approach  -------------------------------')
+    u_safe1,lic1,flag1 = safe_prob.cal_safe_control(u_nom,possible_states)
+    print(f'possible_states:{possible_states}')
+    print(f'u_safe: {u_safe1}')
+    print(f'||u_safe - u_nom||:{linalg.norm(u_nom -u_safe1.reshape(-1,1) )}')
 
-    u_safe2,lic2 = safe_prob.cal_safe_control(u_nom,possible_states_subssr)
-    # print(f'possible_states_subssr:{possible_states_subssr}')
-    # print(f'u_safe: {u_safe2}')
+    print('\n -----------------------  decomposition approach  -------------------------------')
+    u_safe2,lic2,flag2 = safe_prob.cal_safe_control(u_nom,possible_states_subssr)
+    print(f'possible_states:{[state.flatten() for state in possible_states_subssr]}')
+    print(f'u_safe: {u_safe2}')
+    print(f'||u_safe - u_nom||:{linalg.norm(u_nom -u_safe2.reshape(-1,1) )}')
 
+    print('\n -----------------------  decomposition without combination -----------------------')
     # safe control with ssr by decomposition and not composed back
     initial_substates_subssr = solve_ssr_by_decomposition(ssr_solution, eoi, is_print = True,is_composed= False)
     # print(f'initial_substates_subssr: {initial_substates_subssr}')
-    
     lic3 = safe_prob.cal_safe_input_constr_woSSR(initial_substates_subssr)
-    u_safe3 = safe_prob.cal_safe_qp(u_nom,lic3)
-    print(f'u_safe with efficient algorithm: {u_safe3}')
+    u_safe3,flag3 = safe_prob.cal_safe_qp(u_nom,lic3)
+    print(f'u_safe: {u_safe3}')
+    print(f'||u_safe - u_nom||:{linalg.norm(u_nom -u_safe3.reshape(-1,1) )}')
+
 
     # if the safe qp is solved accurately, then all these should be True 
-    print(lic1.is_satisfy(u_safe1))
-    print(lic2.is_satisfy(u_safe2))
-    print(lic3.is_satisfy(u_safe3))
+    print(f'\n --------------- Assertions--------------')
+    print(f'lic1.is_satisfy(u_safe1): {lic1.is_satisfy(u_safe1)}')
+    print(f'lic2.is_satisfy(u_safe2): {lic2.is_satisfy(u_safe2)}')
+    print(f'lic3.is_satisfy(u_safe3): {lic3.is_satisfy(u_safe3)}')
 
-    print(lic1.is_satisfy(u_safe3))
-    print(lic2.is_satisfy(u_safe3))
-    print(linalg.norm(u_safe1.reshape(-1,1) - u_nom) <= 1e-4+ linalg.norm(u_safe3.reshape(-1,1) - u_nom))
-    print(linalg.norm(u_safe2.reshape(-1,1) - u_nom) <= 1e-4+ linalg.norm(u_safe3.reshape(-1,1) - u_nom))
+    print(f'lic1.is_satisfy(u_safe3): {lic1.is_satisfy(u_safe3)}')
+    print(f'lic2.is_satisfy(u_safe3): {lic2.is_satisfy(u_safe3)}')
+    print(f'control derivation norm difference 1 and 3: {linalg.norm(u_safe1.reshape(-1,1) - u_nom) <= 1e-4+ linalg.norm(u_safe3.reshape(-1,1) - u_nom)}')
+    print(f'control derivation norm difference 2 and 3: {linalg.norm(u_safe2.reshape(-1,1) - u_nom) <= 1e-4+ linalg.norm(u_safe3.reshape(-1,1) - u_nom)}')
+
+def main_secure_and_safe_control_timing(n = 8, m = 3, s = 4, p_range=range(8,18)):
+    seed = None
+
+    p_list, exe_time_decomp, exe_time_bf, exe_time_woSSR= [], [], [],[]
+    for p in p_range:
+        ssr_solution, eoi, init_state1, init_state2 = initialization(n,m,p,s,seed)
+        
+        # define CBF and solve safe control
+        h = np.vstack([np.identity(n),-np.identity(n)])
+        q = 10*np.ones((2*n,1))
+        gamma = 0.8
+        u_nom = np.random.normal(0,3,(m,1))
+        # print(f'u_nom: {u_nom}')
+        safe_prob = SafeProblem(ssr_solution.problem,h,q,gamma)
+
+        time_decomp, time_bf, time_woSSR = solve_safe_control_timing(ssr_solution, safe_prob, u_nom, eoi)
+        p_list.append(p)
+        exe_time_decomp.append(time_decomp)
+        exe_time_bf.append(time_bf)
+        exe_time_woSSR.append(time_woSSR)
+    
+    # plotting
+    fig, ax = plt.subplots()
+    ax.plot(np.array(p_list), np.array(exe_time_decomp),label = 'decomposition',color='blue')
+    ax.plot(np.array(p_list), np.array(exe_time_bf),label = 'brute-force',color='red')
+    ax.plot(np.array(p_list), np.array(exe_time_woSSR),label = 'decomposition without combination',color='orange')
+
+    ax.set(xlabel='$p$ total number of sensors', ylabel='Safe control computation time (ms)',
+        title=rf'$n = {n}, m  = {m}, s = {s}$, eigenvalue sparse observability $= p-1$')
+    ax.grid()
+
+    # Add a legend
+    ax.legend()
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    
+    fig.savefig("figures/timing_for_SS_algorithms.pdf")
+    # Show the plot
+    plt.show()
 
 if __name__=='__main__':
     # main_ssr()

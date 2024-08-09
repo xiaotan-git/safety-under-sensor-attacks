@@ -139,6 +139,10 @@ class SafeProblem():
         return LinearInequalityConstr(a_mat,b_vec)
 
     def cal_safe_qp(self,u_nom, lic:LinearInequalityConstr):
+        '''
+        sol_flag: -1 -- qp solver fails, 0 -- qp status "unknown", 1 -- qp status 'optimal'
+        '''
+        flag = 0
         # Define QP parameters for qp solver (CVXOPT): 
         # min 0.5 xT P x+ qT x s.t. Gx <= h
         qp_P = matrix(np.identity(u_nom.shape[0]))
@@ -153,29 +157,35 @@ class SafeProblem():
         try:
             solv_sol = solvers.qp(qp_P,qp_q,qp_G,qp_h)
             if solv_sol['status'] == 'unknown':
-                print('warning: safe control is approximately computed.')
-           
+                print('warning: safe control is approximately computed. Use u_nom instead.')
+                u = u_nom.flatten()
+            else:
+                flag = 1
+                u = np.array(solv_sol['x']).flatten() # extract decision variables of optimization problem
         except:
-            print('cvxopt solver failed:')
-            print(f'qp_P: {qp_P}')
-            print(f'qp_q: {qp_q}')
-            print(f'qp_G: {qp_G}')
-            print(f'qp_h: {qp_h}')
+            # print('cvxopt solver failed:')
+            # print(f'qp_P: {qp_P}')
+            # print(f'qp_q: {qp_q}')
+            # print(f'qp_G: {qp_G}')
+            # print(f'qp_h: {qp_h}')
 
-            solvers.options['show_progress'] = True
-            solv_sol = solvers.qp(qp_P,qp_q,qp_G,qp_h)
+            # solvers.options['show_progress'] = True
+            # solv_sol = solvers.qp(qp_P,qp_q,qp_G,qp_h)
 
-            raise TypeError('no control input found')
+            # raise TypeError('no control input found')
+            print('warning: safe control fails. Use u_nom instead.')
+            flag = -1
+            u = u_nom.flatten()
         
-        u = np.array(solv_sol['x']).flatten() # extract decision variables of optimization problem
-        return u
+
+        return u,flag
     
     def cal_safe_control(self,u_nom, possible_states):
         lic = self.cal_cbf_condition(possible_states)
         # print(f'lic.a_mat:\n {lic.a_mat}')
         # print(f'lic.b_vec:\n {lic.b_vec}')
-        u = self.cal_safe_qp(u_nom,lic)
-        return u,lic
+        u,flag = self.cal_safe_qp(u_nom,lic)
+        return u,lic,flag
 
     def max_kv(self):
         possible_init_states,_,_ = self.ssr.solve_initial_state()
