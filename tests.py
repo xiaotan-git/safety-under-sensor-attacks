@@ -36,8 +36,8 @@ def compare_two_state_lists(lst1,lst2):
 
     return lst1_contains_lst2, lst2_contains_lst1
 
-def generate_random_dtsystem_data(rng, n:int = 8, m:int = 3, p:int = 5,
-                                  is_jordan = False, is_orthgonal = False):
+def generate_random_dtsystem_data(rng, n:int = 8, m:int = 8, p:int = 5, q:int = 2,
+                                  is_jordan = True, is_orthogonal_basis = False):
 
     # dtsys_a = np.random.normal(3,3,(n,n))
     # eig_vals = linalg.eigvals(dtsys_a)
@@ -45,12 +45,22 @@ def generate_random_dtsystem_data(rng, n:int = 8, m:int = 3, p:int = 5,
     # while(not all(np.isreal(eig_vals))):
     #     dtsys_a = np.random.normal(3,3,(n,n))
     #     eig_vals = linalg.eigvals(dtsys_a)
-    # by construction
-    eig_vals = 1.0*rng.random((n,))+0.1 # eig value in [-10,-2] and [2,10]
-    eig_vals = np.multiply(np.sign(rng.random((n,)) - 1.0/2),eig_vals)
-    diag_eig = np.diag(eig_vals)
 
-    if not is_orthgonal:
+    # by construction
+    eig_vals = 1.0*rng.random((n,))+0.1 # eig value in [-1.1,-0.1] and [0.1,1.1]
+    eig_vals = np.multiply(np.sign(rng.random((n,)) - 1.0/2),eig_vals)
+
+    jordan_eig = np.diag(eig_vals)
+    r = n
+    
+    if is_jordan:
+        # make the matrix jordan
+        jordan_eig[0,1] = 1
+        jordan_eig[1,1] = jordan_eig[0,0]
+        r = n - 1
+        
+
+    if not is_orthogonal_basis:
         trial = 0
         while True: 
             P = rng.random((n, n))
@@ -69,19 +79,54 @@ def generate_random_dtsystem_data(rng, n:int = 8, m:int = 3, p:int = 5,
             except np.linalg.LinAlgError:
                 pass
 
-    if is_orthgonal:
-    # choose an orthogonal basis
+    if is_orthogonal_basis:
+    # choose an orthogonal eigenvector basis
         Q = rng.random((n, n))
         P,_ = linalg.qr(Q)
         Pinv = P.transpose()
 
-    dtsys_a = P@diag_eig@Pinv
+    dtsys_a = P@jordan_eig@Pinv
     # print(f'Ac eig_vals: {eig_vals}')
     # print(f'dtsys_a: {dtsys_a}')
     assert all(np.isreal(eig_vals))
 
-    dtsys_b = np.random.normal(1,1,(n,m))
-    dtsys_c = np.random.normal(1,1,(p,n)) # if given one sensor redundancy
+    unique_eig_vals, generalized_space,_,_ = SecureStateReconstruct.compute_sys_eigenproperty(dtsys_a)
+    # print(f'unique_eig_vals:{unique_eig_vals}')
+    # print(f'generalized_space: {generalized_space}')
+    generalized_space = [np.real(space) for space in generalized_space]
+    if is_jordan:
+        assert len(unique_eig_vals)== n-1
+        assert len(generalized_space)== n-1
+
+
+    # dtsys_b = np.random.normal(1,1,(n,m))
+    # special case in the paper
+    assert n == m
+    dtsys_b = np.identity(n)
+    dtsys_c = np.random.normal(1,1,(p,n))
+
+    unobs_subspace_per_sensor = [[] for _ in range(p)]
+    for j in range(r):
+        # choose p - (q+1) sensors from p sensors for subspace j
+        # these sensors do not observe subspace j
+        unobs_sensor_subspace_j = np.random.choice(np.arange(0, p), p-(q+1), replace=False)
+        for i in range(p):
+            if i in unobs_sensor_subspace_j:
+                unobs_subspace_per_sensor[i].append(j)
+
+    for i in range(p):
+        ci = dtsys_c[i:i+1,:]
+        ci_tranpose = ci.transpose()
+        # each sensor has its own unobservable subspace
+        unobs_space_ind = unobs_subspace_per_sensor[i]
+        # check if the ubobservable space is empty
+        if unobs_space_ind:
+            basis_matrix_unobs = np.hstack([ generalized_space[j] for j in  unobs_space_ind])
+            bmu_transpose = basis_matrix_unobs.transpose()
+            proj_ci_transpose = basis_matrix_unobs @ np.linalg.inv(bmu_transpose @ basis_matrix_unobs) @ bmu_transpose @ ci_tranpose
+            ci_remain =  ci_tranpose - proj_ci_transpose
+            dtsys_c[i:i+1,:] = ci_remain.transpose()
+
     dtsys_d = np.zeros((p,m))
     return dtsys_a,dtsys_b, dtsys_c, dtsys_d
 
@@ -111,11 +156,12 @@ def solve_ssr_by_decomposition(ssr_solution:SecureStateReconstruct, eoi, is_prin
     # eigenspace related property
     unique_eigvals, generalized_eigenspace_list, am_list, gm_list = SecureStateReconstruct.compute_sys_eigenproperty(dtsys_a)
     # print(f'Eigen properties. . \n generalized_unique_eigvals
+    r = len(unique_eigvals)
 
     subprob_a, subprob_c, subprob_y = ssr_solution.generate_subssr_data()
     subspace_states_attacked_sensors_list = []
     initial_substates_subssr = []
-    for j in range(subprob_a.shape[2]):
+    for j in range(r):
         sub_a = subprob_a[:,:,j]
         sub_c = subprob_c
         sub_y_his = subprob_y[:,:,j]
@@ -140,8 +186,8 @@ def solve_ssr_by_decomposition(ssr_solution:SecureStateReconstruct, eoi, is_prin
         full_state_list,corresp_sensors = sub_solution.compose_subspace_states(subspace_states_attacked_sensors_list)
         if full_state_list is None:
             print('--------------composition of subspace state fails---------------')
-            for i in range(n):
-                print(f'subspace_states_attacked_sensors_list entry{i}: {subspace_states_attacked_sensors_list[i]}')
+            for j in range(r):
+                print(f'subspace_states_attacked_sensors_list entry{j}: {subspace_states_attacked_sensors_list[j]}')
             return None
         
         if is_initial_state:
@@ -160,12 +206,12 @@ def solve_ssr_by_decomposition(ssr_solution:SecureStateReconstruct, eoi, is_prin
          # return a list of possible initial substates in each subspace
         return initial_substates_subssr
 
-def initialization(n,m,p,s,seed):
+def initialization(n,m,p,s,q,seed):
     
     rng = np.random.default_rng(seed=seed)
 
     # define system
-    dtsys_a, dtsys_b, dtsys_c, dtsys_d = generate_random_dtsystem_data(rng,n,m,p)
+    dtsys_a, dtsys_b, dtsys_c, dtsys_d = generate_random_dtsystem_data(rng,n,m,p,q)
 
     # define true and fake initial states
     init_state1 = 10*rng.random((n,1)) -5
@@ -269,7 +315,7 @@ def main_ssr():
         if np.linalg.norm(full_state.reshape(-1,1)-init_state2)<1e-3:
             print(f'Initial state 2 is a plausible state based on SSR by brute-force approach')
 
-def main_ssr_timing(n = 8, m = 3, s = 4, p_range=range(8,18)):
+def main_ssr_timing(n = 8, m = 8, s = 4, p_range=range(8,18)):
   
     seed = None
 
@@ -303,11 +349,12 @@ def main_secure_and_safe_control():
     m = 4
     p = 7
     s = 4
+    q = 6
     seed = None
 
     print(f'S&S problem has {n} states, {m} inputs, {p} sensors, {s} attacked sensors.')
     # initialization
-    ssr_solution, eoi, init_state1, init_state2 = initialization(n,m,p,s,seed)
+    ssr_solution, eoi, init_state1, init_state2 = initialization(n,m,p,s,q,seed)
 
     # solve ssr by brute-force
     possible_states,corresp_sensors, _ = ssr_solution.solve(error_bound = 1e-3)
@@ -359,11 +406,12 @@ def main_secure_and_safe_control():
     print(f'control derivation norm difference 1 and 3: {linalg.norm(u_safe1.reshape(-1,1) - u_nom) <= 1e-4+ linalg.norm(u_safe3.reshape(-1,1) - u_nom)}')
     print(f'control derivation norm difference 2 and 3: {linalg.norm(u_safe2.reshape(-1,1) - u_nom) <= 1e-4+ linalg.norm(u_safe3.reshape(-1,1) - u_nom)}')
 
-def main_secure_and_safe_control_timing(n = 8, m = 3, s = 4, p_range=range(8,18)):
+def main_secure_and_safe_control_timing(n = 8, m = 3, p_range=range(8,18)):
     seed = None
 
     p_list, exe_time_decomp, exe_time_bf, exe_time_woSSR= [], [], [],[]
     for p in p_range:
+        s = 2*p//3 # taking a floor division
         ssr_solution, eoi, init_state1, init_state2 = initialization(n,m,p,s,seed)
         
         # define CBF and solve safe control

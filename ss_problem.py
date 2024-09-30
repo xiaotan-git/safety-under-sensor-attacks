@@ -764,7 +764,8 @@ class SecureStateReconstruct():
         return unique_eigvals, (generalized) eigenspace, am_list, gm_list
         '''
         eigval_a, eigenspace_a = linalg.eig(A,right=True)
-        unique_eigvals, counts = np.unique(eigval_a,return_counts = True)
+        tolerence = 6
+        unique_eigvals, counts = np.unique(np.round(eigval_a,tolerence),return_counts = True)
         # total number of subspaces V^j, j = 1,..., r
         r = len(unique_eigvals)
 
@@ -917,12 +918,45 @@ class SecureStateReconstruct():
             # linalg.null_space is numerically sensitive. rcond - relative conditional number
             temp_matrix = linalg.fractional_matrix_power(A - eigval*np.eye(A.shape[0]), am)
             generalized_eigenspace = linalg.null_space(temp_matrix,rcond = EPS)
-            if generalized_eigenspace.shape[1] > am:
-                generalized_eigenspace = linalg.null_space(temp_matrix,rcond = 1e-3)
+            # if generalized_eigenspace.shape[1] > am:
+            #     generalized_eigenspace = linalg.null_space(temp_matrix,rcond = 1e-3)
         
-        assert generalized_eigenspace.shape[1] == am, f'generalized_eigenspace.shape:{generalized_eigenspace.shape}, am: {am}'
+        assert generalized_eigenspace.shape[1] == am, f'generalized_eigenspace:{generalized_eigenspace}, am: {am}'
         return generalized_eigenspace
         
+    @staticmethod
+    def pretight_construct_proj(subspace_list,j):
+        # This is to handle the case when one column of V^k is zero vector
+        # This can happen for observable space projection when the sensor i cannot observe  V^j, i.e., 
+        # Ci^T vj = 0,  Ci^T Avj = 0, ..., Ci^T A^n vj = 0. In this case, the projection matrix is zero matrix.
+        # if only one or more columns in V^j are zero column vectors, then we just remove them from V^j
+        
+        assert j <= len(subspace_list)-1
+
+        j_new = j
+        
+        subspace_list_tight = []   # Create a copy of the list
+        k_list = []                 #  Create a list of to-be-removed subspaces
+        for k in range(len(subspace_list)):
+            subspace_k = subspace_list[k]
+            sub_dim = subspace_k.shape[1]
+            for i in range(sub_dim):
+                basis_vec = subspace_k[:,i:i+1]
+                if np.linalg.norm(basis_vec)<1e-10:
+                    subspace_k = np.delete(subspace_k,i,axis=1)
+           
+            if subspace_k.size == 0:
+                # if every dim in this subspace is perpendicular to the measurement
+                k_list.append(k)
+                if j>k:
+                    j_new = j_new - 1 # since we remove V^k in subspace_list_tight, the index changes
+            else:
+                subspace_list_tight.append(subspace_k)
+
+        # assert j_new <= len(subspace_list_tight)-1, f'j:{j},j_new:{j_new},k_list:{k_list},subspace_list_tight \n {subspace_list_tight}'
+
+        return subspace_list_tight, j_new, k_list
+
     @staticmethod
     def construct_proj(subspace_list,j):
         '''
@@ -935,7 +969,17 @@ class SecureStateReconstruct():
 
         j = 0,1,..., r-1
         '''
-        full_space = np.hstack(subspace_list) #  = V = (sp1, sp2, ..., spr)
+
+        subspace_list_tight, j_new, k_list = SecureStateReconstruct.pretight_construct_proj(subspace_list,j)
+        if j in k_list:
+            embedded_space_dim = np.shape(subspace_list[0])[0]
+            proj_mat =np.zeros((embedded_space_dim,embedded_space_dim))
+            return  proj_mat
+
+        # print(f'j:{j}, j_new:{j_new}')
+
+        full_space = np.hstack(subspace_list_tight) #  = V = (sp1, sp2, ..., spr)
+        # print(f'full_space:{full_space}')
         full_space.astype(np.float128)
         rank_full_space = np.linalg.matrix_rank(full_space)
         
@@ -943,14 +987,16 @@ class SecureStateReconstruct():
         
         # to construct [0, ..., spj, ...., 0] 
         tem_list = []
-        for item in range(len(subspace_list)):
-            subspace = subspace_list[j]
-            if item != j:
+        for item in range(len(subspace_list_tight)):
+            subspace = subspace_list_tight[j_new]
+            if item != j_new:
                 tem_list.append(np.zeros(subspace.shape))
             else:
                 tem_list.append(subspace)
         
         lhd = np.hstack(tem_list)
+
+        assert lhd.shape[1] == rank_full_space,f'lhd.shape:{lhd.shape}, rank_full_space.shape:{rank_full_space.shape}'
         # It is suggested that linalg.inv is not reliable. See https://stackoverflow.com/questions/31256252/why-does-numpy-linalg-solve-offer-more-precise-matrix-inversions-than-numpy-li
         # proj_mat = lhd @ linalg.inv(full_space.T @ full_space) @ full_space.T 
         proj_mat = lhd @ linalg.pinv(full_space)
