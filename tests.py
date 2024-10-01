@@ -131,10 +131,10 @@ def generate_random_dtsystem_data(rng, n:int = 8, m:int = 8, p:int = 5, q:int = 
     return dtsys_a,dtsys_b, dtsys_c, dtsys_d
 
 def generate_random_io_data(dtsys_a,dtsys_b, dtsys_c, dtsys_d, s:int, sensor_initial_states, 
-                            rng, has_u_seq = False, is_noisy = False):
+                            rng, has_u_seq = False, u_seq=None,is_noisy = False, io_length = None):
 
-    u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states,
-                                                                            s = s,is_noisy = is_noisy, noise_level=0.0001,has_u_seq = has_u_seq)
+    u_seq, tilde_y_his, noise_level = SSProblem.generate_attack_measurement(dtsys_a, dtsys_b, dtsys_c, dtsys_d,sensor_initial_states, io_length = io_length,
+                                                                            s = s,is_noisy = is_noisy, noise_level=0.0001,has_u_seq = has_u_seq,u_seq=u_seq)
     return u_seq,tilde_y_his, noise_level
 
 def init_brute_force_ssr(dtsys_a,dtsys_b, dtsys_c, dtsys_d, s:int,u_seq,tilde_y_his,  noise_level):

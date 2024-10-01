@@ -68,6 +68,8 @@ class SSProblem():
         if input_sequence is not None:
             self.u_seq = input_sequence
             self.tilde_y_his = output_sequence
+            # we assert that the last row of u should be all zeros
+            assert np.linalg.norm(input_sequence[-1,:]) <1e-6
         else:
             self.u_seq = np.zeros((self.io_length,self.m))
             self.y_his = output_sequence   
@@ -333,7 +335,8 @@ class SecureStateReconstruct():
         if possible_states is not None: 
             for ind in range(possible_states.shape[1]):
                 init_state = possible_states[:,ind:ind+1] # must be 2d and state.shape[0] must be n
-                curr_state = self.problem.update_state(self.problem.A, self.problem.B, init_state,self.problem.u_seq)
+                # we follow a convention that the last row of u_seq is zero, meaning the input to be decided
+                curr_state = self.problem.update_state(self.problem.A, self.problem.B, init_state,self.problem.u_seq[:-1,:])
                 current_states_list.append(curr_state)
             current_states = np.hstack(current_states_list)
         else:
