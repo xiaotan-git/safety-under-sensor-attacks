@@ -123,7 +123,7 @@ class SafeProblem():
         kv_maxsum = np.zeros(np.shape(self.q))
         count_subspace = len(initial_states_subssr)
         for j in range(count_subspace):
-            possible_initial_states = initial_states_subssr[j]      
+            possible_initial_states = initial_states_subssr[j]
             kv = self.k @ possible_initial_states
             kv_max = kv.max(axis = 1)
             kv_max = kv_max.reshape(-1,1)

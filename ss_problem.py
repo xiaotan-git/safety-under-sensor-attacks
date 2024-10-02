@@ -56,14 +56,12 @@ class SSProblem():
         self.B = dtsys_b
         self.C = dtsys_c
         self.D = dtsys_d
-        self.io_length = output_sequence.shape[0]
-        self.noise_level = measurement_noise_level
-        self.is_sub_ssr = is_sub_ssr
 
         self.n = np.shape(dtsys_a)[0] # dim of states
         self.m = np.shape(dtsys_b)[1] # dim of inputs
         self.p = np.shape(dtsys_c)[0] # no. of sensors
         self.s = attack_sensor_count # max no. of attacked sensors
+        self.io_length = output_sequence.shape[0]
 
         if input_sequence is not None:
             self.u_seq = input_sequence
@@ -73,6 +71,18 @@ class SSProblem():
         else:
             self.u_seq = np.zeros((self.io_length,self.m))
             self.y_his = output_sequence   
+
+        
+        self.noise_level = measurement_noise_level
+        self.is_sub_ssr = is_sub_ssr
+        self.update_object()
+
+    def update_object(self):
+        
+        if hasattr(self,'tilde_y_his'):
+            self.io_length = self.tilde_y_his.shape[0]
+        else:
+            self.io_length = self.y_his.shape[0]
 
 
         assert self.n == np.shape(self.A)[0]
@@ -84,9 +94,7 @@ class SSProblem():
 
         assert self.io_length == np.shape(self.u_seq)[0]
         assert self.m == np.shape(self.u_seq)[1]
-        assert self.io_length == np.shape(output_sequence)[0]
-        assert self.p == np.shape(output_sequence)[1]
-
+    
     @staticmethod
     def convert_ct_to_dt(Ac, Bc, Cc, Dc, ts):
         '''
@@ -210,6 +218,17 @@ class SecureStateReconstruct():
         # check if the clean measurement exists
         if hasattr(ss_problem,'y_his'):
             self.y_his = ss_problem.y_his
+        else:
+            # 2d narray, shape (io_length, p). Definition per (5)
+            self.y_his = self.construct_clean_measurement()
+    
+    def update_object(self):
+
+        self.problem.update_object()
+        # check if the clean measurement exists
+        if hasattr(self.problem,'y_his'):
+            self.y_his = self.problem.y_his
+            print('update SecureStateReconstruct object relying on ss_problem.y_his')
         else:
             # 2d narray, shape (io_length, p). Definition per (5)
             self.y_his = self.construct_clean_measurement()
