@@ -197,7 +197,9 @@ def solve_ssr_by_decomposition(ssr_solution:SecureStateReconstruct, eoi, is_prin
             current_states_list = []
             for init_state in full_state_list:
                 init_state = init_state.reshape(-1,1)
-                curr_state = ssr_solution.problem.update_state(dtsys_a, dtsys_b, init_state,ssr_solution.problem.u_seq)
+                # careful, the last row of u_seq is all zero and should not be used
+                u_seq_clean = ssr_solution.problem.u_seq[:-1,:]
+                curr_state = ssr_solution.problem.update_state(dtsys_a, dtsys_b, init_state,u_seq_clean)
                 current_states_list.append(curr_state)
                 # return all possible current state
             return current_states_list
